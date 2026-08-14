@@ -1,0 +1,210 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+ 
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server);
+ 
+const SUITS = ['♠', '♣', '♦', '♥'];
+const RANKS = ['6', '7', '8', '9', 'J', 'Q', 'K', '10', 'A'];
+const POINTS = { '6': 0, '7': 0, '8': 0, '9': 0, 'J': 2, 'Q': 3, 'K': 4, '10': 10, 'A': 11 };
+ 
+let roomState = {
+    players: [],
+    deck: [],
+    trumpIndex: 0,
+    tableCards: [],
+    gameStarted: false,
+    maxPlayers: 4
+};
+ 
+function createDeck() {
+    let deck = [];
+    for (let suit of SUITS) {
+        for (let rank of RANKS) {
+            deck.push({ suit, rank, pt: POINTS[rank] });
+        }
+    }
+    return deck.sort(() => Math.random() - 0.5);
+}
+ 
+// ---------------- HTML FRONTEND SERVING ----------------
+app.get('/', (req, res) => {
+    res.send(`
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>სუპერ ბურა - MultiPlayer</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { font-family: sans-serif; background: #1a2a3a; color: white; text-align: center; margin: 0; padding: 20px; }
+        .card { display: inline-block; width: 60px; height: 90px; background: white; color: black; border-radius: 5px; margin: 5px; padding: 5px; font-weight: bold; cursor: pointer; border: 2px solid #ccc; user-select: none; }
+        .card.selected { border-color: gold; transform: translateY(-10px); }
+        .card.red { color: red; }
+        #board { background: #2e5d32; border: 5px solid #8b5a2b; border-radius: 15px; padding: 20px; max-width: 800px; margin: 20px auto; min-height: 400px; }
+        .btn { background: #ffd700; color: black; border: none; padding: 10px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; margin: 5px; }
+        .lobby { background: rgba(0,0,0,0.5); padding: 20px; border-radius: 10px; max-width: 400px; margin: 0 auto; }
+    </style>
+</head>
+<body>
+ 
+<h1>♠️ სუპერ ბურა - ONLINE ♥️</h1>
+ 
+<div id="lobby" class="lobby">
+    <h3>შემოდი თამაშში</h3>
+    <input type="text" id="username" placeholder="შეიყვანე სახელი" style="padding: 8px; width: 80%;">
+    <br><br>
+    <button class="btn" onclick="join()">შეერთება</button>
+</div>
+ 
+<div id="gameArea" style="display:none;">
+    <div id="board">
+        <h3>მოთამაშეები ოთახში: <span id="playerCount">0</span>/4</h3>
+        <div id="playersList"></div>
+        <hr>
+        <h4>მაგიდაზე ჩამოსული:</h4>
+        <div id="tableArea"></div>
+        <hr>
+        <h4>შენი ხელი:</h4>
+        <div id="myHand"></div>
+        <button class="btn" onclick="playSelected()">ჩამოსვლა</button>
+    </div>
+</div>
+ 
+<script>
+    const socket = io();
+    let selectedIndices = [];
+    let myHandData = [];
+ 
+    function join() {
+        const name = document.getElementById('username').value;
+        if(!name) return alert('გთხოვ შეიყვანო სახელი');
+        socket.emit('joinGame', name);
+        document.getElementById('lobby').style.display = 'none';
+        document.getElementById('gameArea').style.display = 'block';
+    }
+ 
+    socket.on('updateRoom', (state) => {
+        document.getElementById('playerCount').innerText = state.players.length;
+        
+        const pList = document.getElementById('playersList');
+        pList.innerHTML = state.players.map(p => \`<b>\${p.name}</b> (ქულა: \${p.score})\`).join(' | ');
+ 
+        const me = state.players.find(p => p.socketId === socket.id);
+        if (me) {
+            myHandData = me.hand;
+            renderHand();
+        }
+ 
+        const tArea = document.getElementById('tableArea');
+        tArea.innerHTML = '';
+        state.tableCards.forEach(c => {
+            const isRed = c.suit === '♦' || c.suit === '♥';
+            tArea.innerHTML += \`<div class="card \${isRed ? 'red':''}">\${c.rank}<br>\${c.suit}</div>\`;
+        });
+    });
+ 
+    function renderHand() {
+        const handDiv = document.getElementById('myHand');
+        handDiv.innerHTML = '';
+        myHandData.forEach((c, idx) => {
+            const isRed = c.suit === '♦' || c.suit === '♥';
+            const sel = selectedIndices.includes(idx) ? 'selected' : '';
+            handDiv.innerHTML += \`<div class="card \${isRed ? 'red':''} \${sel}" onclick="toggleSelect(\${idx})">\${c.rank}<br>\${c.suit}</div>\`;
+        });
+    }
+ 
+    function toggleSelect(idx) {
+        if(selectedIndices.includes(idx)) {
+            selectedIndices = selectedIndices.filter(i => i !== idx);
+        } else {
+            selectedIndices.push(idx);
+        }
+        renderHand();
+    }
+ 
+    function playSelected() {
+        if(selectedIndices.length === 0) return;
+        socket.emit('playCards', selectedIndices);
+        selectedIndices = [];
+    }
+ 
+    socket.on('errorMsg', (msg) => alert(msg));
+</script>
+</body>
+</html>
+    `);
+});
+ 
+// ---------------- SOCKET.IO LOGIC ----------------
+io.on('connection', (socket) => {
+    console.log('ახალი მოთამაშე:', socket.id);
+ 
+    socket.on('joinGame', (playerName) => {
+        if (roomState.players.length >= roomState.maxPlayers) {
+            socket.emit('errorMsg', 'ოთახი სავსეა!');
+            return;
+        }
+ 
+        const player = {
+            id: roomState.players.length + 1,
+            socketId: socket.id,
+            name: playerName || `მოთამაშე ${roomState.players.length + 1}`,
+            hand: [],
+            score: 0,
+            xishti: 0
+        };
+ 
+        roomState.players.push(player);
+        io.emit('updateRoom', roomState);
+ 
+        if (roomState.players.length === roomState.maxPlayers && !roomState.gameStarted) {
+            startNewGame();
+        }
+    });
+ 
+    socket.on('playCards', (cardIndices) => {
+        const player = roomState.players.find(p => p.socketId === socket.id);
+        if (!player) return;
+ 
+        let played = [];
+        cardIndices.sort((a,b) => b - a).forEach(idx => {
+            played.push(player.hand.splice(idx, 1)[0]);
+        });
+ 
+        roomState.tableCards = played;
+        
+        while(player.hand.length < 5 && roomState.deck.length > 0) {
+            player.hand.push(roomState.deck.pop());
+        }
+ 
+        io.emit('updateRoom', roomState);
+    });
+ 
+    socket.on('disconnect', () => {
+        roomState.players = roomState.players.filter(p => p.socketId !== socket.id);
+        if (roomState.players.length === 0) {
+            roomState.gameStarted = false;
+        }
+        io.emit('updateRoom', roomState);
+    });
+});
+ 
+function startNewGame() {
+    roomState.gameStarted = true;
+    roomState.deck = createDeck();
+    
+    roomState.players.forEach(p => {
+        p.hand = roomState.deck.splice(0, 5);
+    });
+ 
+    io.emit('updateRoom', roomState);
+}
+ 
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+    console.log(`სერვერი ჩაირთო პორტზე: ${PORT}`);
+});
