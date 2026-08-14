@@ -147,19 +147,16 @@ app.get('/', (req, res) => {
         
         const turnInd = document.getElementById('turnIndicator');
         if(!state.gameStarted) {
-            turnInd.innerText = \`ველოდებით მოთამაშეებს (\${state.players.length}/4)...\`;
+            turnInd.innerText = 'ველოდებით მოთამაშეებს (' + state.players.length + '/4)...';
         } else {
-            turnInd.innerText = isMyTurn ? "🔥 შენი რიგია!" : \`რიგი აქვს: \${activePlayer ? activePlayer.name : ''}\`;
+            turnInd.innerText = isMyTurn ? "🔥 შენი რიგია!" : ('რიგი აქვს: ' + (activePlayer ? activePlayer.name : ''));
         }
 
         // Leaderboard
         const lb = document.getElementById('leaderboardList');
-        lb.innerHTML = state.players.map(p => \`
-            <div class="lb-item">
-                <span>\${p.name}</span>
-                <span><b>\${p.score}</b> ქ | ❌\${p.xishti}</span>
-            </div>
-        \`).join('');
+        lb.innerHTML = state.players.map(p => 
+            '<div class="lb-item"><span>' + p.name + '</span><span><b>' + p.score + '</b> ქ | ❌' + p.xishti + '</span></div>'
+        ).join('');
 
         // Render Opponents
         const topP = document.getElementById('topPlayers');
@@ -170,12 +167,11 @@ app.get('/', (req, res) => {
             for(let i=0; i<p.handCount; i++) {
                 cardsBacks += '<div class="card-back"></div>';
             }
-            topP.innerHTML += \`
-                <div class="player-spot \${isActive ? 'active' : ''}">
-                    <div class="p-name">\${p.name}</div>
-                    <div style="margin-top:5px;">\${cardsBacks}</div>
-                </div>
-            \`;
+            topP.innerHTML += 
+                '<div class="player-spot ' + (isActive ? 'active' : '') + '">' +
+                    '<div class="p-name">' + p.name + '</div>' +
+                    '<div style="margin-top:5px;">' + cardsBacks + '</div>' +
+                '</div>';
         });
 
         // My Hand
@@ -190,15 +186,14 @@ app.get('/', (req, res) => {
         state.tableCards.forEach(item => {
             const c = item.card;
             const isRed = c.suit === '♦' || c.suit === '♥';
-            tArea.innerHTML += \`
-                <div style="text-align:center;">
-                    <div style="font-size:11px; margin-bottom:2px; color:#cbd5e1;">\${item.playerName}</div>
-                    <div class="card \${isRed ? 'red':''}">
-                        <div>\${c.rank}</div>
-                        <div>\${c.suit}</div>
-                    </div>
-                </div>
-            \`;
+            tArea.innerHTML += 
+                '<div style="text-align:center;">' +
+                    '<div style="font-size:11px; margin-bottom:2px; color:#cbd5e1;">' + item.playerName + '</div>' +
+                    '<div class="card ' + (isRed ? 'red': '') + '">' +
+                        '<div>' + c.rank + '</div>' +
+                        '<div>' + c.suit + '</div>' +
+                    '</div>' +
+                '</div>';
         });
     });
 
@@ -208,12 +203,11 @@ app.get('/', (req, res) => {
         myHandData.forEach((c, idx) => {
             const isRed = c.suit === '♦' || c.suit === '♥';
             const sel = selectedIndices.includes(idx) ? 'selected' : '';
-            handDiv.innerHTML += \`
-                <div class="card \${isRed ? 'red':''} \${sel}" onclick="toggleSelect(\${idx})">
-                    <div>\${c.rank}</div>
-                    <div>\${c.suit}</div>
-                </div>
-            \`;
+            handDiv.innerHTML += 
+                '<div class="card ' + (isRed ? 'red': '') + ' ' + sel + '" onclick="toggleSelect(' + idx + ')">' +
+                    '<div>' + c.rank + '</div>' +
+                    '<div>' + c.suit + '</div>' +
+                '</div>';
         });
     }
 
@@ -253,7 +247,7 @@ io.on('connection', (socket) => {
         const player = {
             id: roomState.players.length,
             socketId: socket.id,
-            name: playerName || მოთამაშე ${roomState.players.length + 1},
+            name: playerName || ('მოთამაშე ' + (roomState.players.length + 1)),
             hand: [],
             handCount: 0,
             score: 0,
@@ -310,12 +304,7 @@ io.on('connection', (socket) => {
 });
 
 function evaluateRoundEnd() {
-    // 1. Calculate turn winner / points for this trick
-    // (Simplification for round progression to next cards)
-    
-    // Check if hand finished -> draw cards for everyone strictly after round finishes
     setTimeout(() => {
-        // Refill hands for all players after full trick is completed
         roomState.players.forEach(p => {
             while(p.hand.length < 5 && roomState.deck.length > 0) {
                 p.hand.push(roomState.deck.pop());
@@ -325,7 +314,6 @@ function evaluateRoundEnd() {
 
         roomState.tableCards = [];
         
-        // Cyclic progression of starter based on lowest score / last xishti
         let nextStart = (roomState.roundStartIndex + 1) % roomState.players.length;
         roomState.roundStartIndex = nextStart;
         roomState.currentTurnIndex = nextStart;
@@ -341,7 +329,6 @@ function startNewGame() {
     roomState.deck = createDeck();
     roomState.tableCards = [];
     
-    // First player who joined starts first
     roomState.currentTurnIndex = 0;
     roomState.roundStartIndex = 0;
 
@@ -356,7 +343,6 @@ function startNewGame() {
 }
 
 function sendRoomUpdate() {
-    // Sanitize hand secret data for other players
     let sanitizedPlayers = roomState.players.map(p => ({
         socketId: p.socketId,
         name: p.name,
@@ -374,7 +360,7 @@ function sendRoomUpdate() {
     });
 }
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(სერვერი ჩაირთო პორტზე: ${PORT});
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, '0.0.0.0', () => {
+    console.log('სერვერი ჩაირთო პორტზე: ' + PORT);
 });
