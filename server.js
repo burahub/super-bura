@@ -13,10 +13,12 @@ const POINTS = { '6': 0, '7': 0, '8': 0, '9': 0, 'J': 2, 'Q': 3, 'K': 4, '10': 1
 let roomState = {
     players: [],
     deck: [],
-    trumpIndex: 0,
+    trumpCard: null,
     tableCards: [],
     gameStarted: false,
-    maxPlayers: 4
+    maxPlayers: 4,
+    currentTurnIndex: 0,
+    roundStartIndex: 0
 };
  
 function createDeck() {
@@ -39,14 +41,48 @@ app.get('/', (req, res) => {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>სუპერ ბურა - MultiPlayer</title>
     <script src="/socket.io/socket.io.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: sans-serif; background: #1a2a3a; color: white; text-align: center; margin: 0; padding: 20px; }
-        .card { display: inline-block; width: 60px; height: 90px; background: white; color: black; border-radius: 5px; margin: 5px; padding: 5px; font-weight: bold; cursor: pointer; border: 2px solid #ccc; user-select: none; }
-        .card.selected { border-color: gold; transform: translateY(-10px); }
-        .card.red { color: red; }
-        #board { background: #2e5d32; border: 5px solid #8b5a2b; border-radius: 15px; padding: 20px; max-width: 800px; margin: 20px auto; min-height: 400px; }
-        .btn { background: #ffd700; color: black; border: none; padding: 10px 20px; font-weight: bold; border-radius: 5px; cursor: pointer; margin: 5px; }
-        .lobby { background: rgba(0,0,0,0.5); padding: 20px; border-radius: 10px; max-width: 400px; margin: 0 auto; }
+        * { box-sizing: border-box; font-family: 'Poppins', sans-serif; }
+        body { background: #0f172a; color: white; margin: 0; padding: 15px; display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
+        
+        h1 { font-size: 26px; margin-bottom: 10px; color: #f59e0b; text-shadow: 0 0 10px rgba(245, 158, 11, 0.3); }
+ 
+        .lobby { background: #1e293b; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); border: 1px solid #334155; text-align: center; width: 100%; max-width: 400px; margin-top: 50px; }
+        .lobby input { padding: 12px; width: 100%; border-radius: 8px; border: 1px solid #475569; background: #0f172a; color: white; font-size: 16px; margin-bottom: 15px; text-align: center; }
+        
+        .btn { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; border: none; padding: 12px 24px; font-weight: 700; border-radius: 8px; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 4px 12px rgba(217, 119, 6, 0.4); }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 15px rgba(217, 119, 6, 0.6); }
+        .btn:disabled { background: #64748b; cursor: not-allowed; transform: none; box-shadow: none; }
+ 
+        #gameLayout { display: flex; gap: 20px; width: 100%; max-width: 1100px; flex-wrap: wrap; justify-content: center; }
+        
+        /* Poker Table */
+        #pokerTable { flex: 1; min-width: 650px; background: radial-gradient(circle, #15803d 0%, #166534 70%, #052e16 100%); border: 12px solid #78350f; border-radius: 120px; box-shadow: inset 0 0 50px #000, 0 20px 40px rgba(0,0,0,0.8); padding: 20px; position: relative; min-height: 520px; display: flex; flex-direction: column; justify-content: space-between; align-items: center; }
+ 
+        /* Players Spots */
+        .players-container { display: flex; justify-content: space-around; width: 100%; }
+        .player-spot { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(5px); border: 2px solid #334155; padding: 10px 15px; border-radius: 12px; text-align: center; min-width: 120px; transition: all 0.3s; }
+        .player-spot.active { border-color: #f59e0b; box-shadow: 0 0 15px #f59e0b; transform: scale(1.05); }
+        .player-spot .p-name { font-weight: 600; font-size: 14px; }
+        
+        /* Cards UI */
+        .card { display: inline-flex; flex-direction: column; justify-content: space-between; width: 62px; height: 92px; background: white; color: #1e293b; border-radius: 8px; padding: 6px; font-weight: bold; font-size: 16px; cursor: pointer; border: 2px solid #cbd5e1; user-select: none; transition: transform 0.2s ease, box-shadow 0.2s ease; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .card:hover { transform: translateY(-5px); }
+        .card.selected { border-color: #f59e0b; transform: translateY(-15px); box-shadow: 0 8px 15px rgba(245, 158, 11, 0.5); }
+        .card.red { color: #dc2626; }
+        .card-back { background: linear-gradient(135deg, #1e3a8a, #3b82f6); border: 2px solid #93c5fd; border-radius: 6px; width: 22px; height: 32px; display: inline-block; margin: 1px; box-shadow: 0 2px 4px rgba(0,0,0,0.4); }
+ 
+        /* Table Center */
+        .table-center { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 15px; margin: 15px 0; }
+        .played-cards-area { display: flex; gap: 15px; min-height: 100px; align-items: center; }
+ 
+        /* Leaderboard Side Panel */
+        .sidebar { width: 250px; background: #1e293b; border-radius: 16px; padding: 20px; border: 1px solid #334155; height: fit-content; }
+        .sidebar h3 { margin-top: 0; color: #f59e0b; border-bottom: 2px solid #334155; padding-bottom: 8px; font-size: 18px; }
+        .lb-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155; font-size: 14px; }
+ 
+        #handArea { display: flex; justify-content: center; gap: 8px; min-height: 100px; padding: 10px; }
     </style>
 </head>
 <body>
@@ -55,22 +91,35 @@ app.get('/', (req, res) => {
  
 <div id="lobby" class="lobby">
     <h3>შემოდი თამაშში</h3>
-    <input type="text" id="username" placeholder="შეიყვანე სახელი" style="padding: 8px; width: 80%;">
-    <br><br>
+    <input type="text" id="username" placeholder="შეიყვანე სახელი" maxlength="12">
     <button class="btn" onclick="join()">შეერთება</button>
 </div>
  
-<div id="gameArea" style="display:none;">
-    <div id="board">
-        <h3>მოთამაშეები ოთახში: <span id="playerCount">0</span>/4</h3>
-        <div id="playersList"></div>
-        <hr>
-        <h4>მაგიდაზე ჩამოსული:</h4>
-        <div id="tableArea"></div>
-        <hr>
-        <h4>შენი ხელი:</h4>
-        <div id="myHand"></div>
-        <button class="btn" onclick="playSelected()">ჩამოსვლა</button>
+<div id="gameArea" style="display:none;" class="game-area">
+    <div id="gameLayout">
+        
+        <!-- Table -->
+        <div id="pokerTable">
+            <div id="topPlayers" class="players-container"></div>
+ 
+            <div class="table-center">
+                <div style="color: #fef08a; font-weight: 600;" id="turnIndicator">მოლოდინი...</div>
+                <div id="tableCardsArea" class="played-cards-area"></div>
+            </div>
+ 
+            <!-- Current Player Hand -->
+            <div style="width: 100%; text-align: center;">
+                <div id="handArea"></div>
+                <button id="playBtn" class="btn" onclick="playSelected()" style="margin-top: 10px;">ჩამოსვლა</button>
+            </div>
+        </div>
+ 
+        <!-- Leaderboard Sidebar -->
+        <div class="sidebar">
+            <h3>ლიდერბორდი 🏆</h3>
+            <div id="leaderboardList"></div>
+        </div>
+ 
     </div>
 </div>
  
@@ -78,9 +127,10 @@ app.get('/', (req, res) => {
     const socket = io();
     let selectedIndices = [];
     let myHandData = [];
+    let isMyTurn = false;
  
     function join() {
-        const name = document.getElementById('username').value;
+        const name = document.getElementById('username').value.trim();
         if(!name) return alert('გთხოვ შეიყვანო სახელი');
         socket.emit('joinGame', name);
         document.getElementById('lobby').style.display = 'none';
@@ -88,36 +138,87 @@ app.get('/', (req, res) => {
     }
  
     socket.on('updateRoom', (state) => {
-        document.getElementById('playerCount').innerText = state.players.length;
-        
-        const pList = document.getElementById('playersList');
-        pList.innerHTML = state.players.map(p => \`<b>\${p.name}</b> (ქულა: \${p.score})\`).join(' | ');
- 
         const me = state.players.find(p => p.socketId === socket.id);
+        const meIndex = state.players.findIndex(p => p.socketId === socket.id);
+        
+        // Turn Status
+        isMyTurn = state.gameStarted && (state.currentTurnIndex === meIndex);
+        const activePlayer = state.players[state.currentTurnIndex];
+        
+        const turnInd = document.getElementById('turnIndicator');
+        if(!state.gameStarted) {
+            turnInd.innerText = \`ველოდებით მოთამაშეებს (\${state.players.length}/4)...\`;
+        } else {
+            turnInd.innerText = isMyTurn ? "🔥 შენი რიგია!" : \`რიგი აქვს: \${activePlayer ? activePlayer.name : ''}\`;
+        }
+ 
+        // Leaderboard
+        const lb = document.getElementById('leaderboardList');
+        lb.innerHTML = state.players.map(p => \`
+            <div class="lb-item">
+                <span>\${p.name}</span>
+                <span><b>\${p.score}</b> ქ | ❌\${p.xishti}</span>
+            </div>
+        \`).join('');
+ 
+        // Render Opponents
+        const topP = document.getElementById('topPlayers');
+        topP.innerHTML = '';
+        state.players.forEach((p, idx) => {
+            const isActive = state.gameStarted && (idx === state.currentTurnIndex);
+            let cardsBacks = '';
+            for(let i=0; i<p.handCount; i++) {
+                cardsBacks += '<div class="card-back"></div>';
+            }
+            topP.innerHTML += \`
+                <div class="player-spot \${isActive ? 'active' : ''}">
+                    <div class="p-name">\${p.name}</div>
+                    <div style="margin-top:5px;">\${cardsBacks}</div>
+                </div>
+            \`;
+        });
+ 
+        // My Hand
         if (me) {
-            myHandData = me.hand;
+            myHandData = me.hand || [];
             renderHand();
         }
  
-        const tArea = document.getElementById('tableArea');
+        // Table Cards
+        const tArea = document.getElementById('tableCardsArea');
         tArea.innerHTML = '';
-        state.tableCards.forEach(c => {
+        state.tableCards.forEach(item => {
+            const c = item.card;
             const isRed = c.suit === '♦' || c.suit === '♥';
-            tArea.innerHTML += \`<div class="card \${isRed ? 'red':''}">\${c.rank}<br>\${c.suit}</div>\`;
+            tArea.innerHTML += \`
+                <div style="text-align:center;">
+                    <div style="font-size:11px; margin-bottom:2px; color:#cbd5e1;">\${item.playerName}</div>
+                    <div class="card \${isRed ? 'red':''}">
+                        <div>\${c.rank}</div>
+                        <div>\${c.suit}</div>
+                    </div>
+                </div>
+            \`;
         });
     });
  
     function renderHand() {
-        const handDiv = document.getElementById('myHand');
+        const handDiv = document.getElementById('handArea');
         handDiv.innerHTML = '';
         myHandData.forEach((c, idx) => {
             const isRed = c.suit === '♦' || c.suit === '♥';
             const sel = selectedIndices.includes(idx) ? 'selected' : '';
-            handDiv.innerHTML += \`<div class="card \${isRed ? 'red':''} \${sel}" onclick="toggleSelect(\${idx})">\${c.rank}<br>\${c.suit}</div>\`;
+            handDiv.innerHTML += \`
+                <div class="card \${isRed ? 'red':''} \${sel}" onclick="toggleSelect(\${idx})">
+                    <div>\${c.rank}</div>
+                    <div>\${c.suit}</div>
+                </div>
+            \`;
         });
     }
  
     function toggleSelect(idx) {
+        if(!isMyTurn) return;
         if(selectedIndices.includes(idx)) {
             selectedIndices = selectedIndices.filter(i => i !== idx);
         } else {
@@ -127,7 +228,8 @@ app.get('/', (req, res) => {
     }
  
     function playSelected() {
-        if(selectedIndices.length === 0) return;
+        if(!isMyTurn) return alert('ჯერ შენი რიგი არ არის!');
+        if(selectedIndices.length === 0) return alert('აირჩიე კარტი ჩამოსასვლელად!');
         socket.emit('playCards', selectedIndices);
         selectedIndices = [];
     }
@@ -141,7 +243,6 @@ app.get('/', (req, res) => {
  
 // ---------------- SOCKET.IO LOGIC ----------------
 io.on('connection', (socket) => {
-    console.log('ახალი მოთამაშე:', socket.id);
  
     socket.on('joinGame', (playerName) => {
         if (roomState.players.length >= roomState.maxPlayers) {
@@ -150,61 +251,16 @@ io.on('connection', (socket) => {
         }
  
         const player = {
-            id: roomState.players.length + 1,
+            id: roomState.players.length,
             socketId: socket.id,
             name: playerName || `მოთამაშე ${roomState.players.length + 1}`,
             hand: [],
+            handCount: 0,
             score: 0,
-            xishti: 0
+            xishti: 0,
+            roundPoints: 0,
+            isXishtiThisRound: false
         };
  
         roomState.players.push(player);
-        io.emit('updateRoom', roomState);
- 
-        if (roomState.players.length === roomState.maxPlayers && !roomState.gameStarted) {
-            startNewGame();
-        }
-    });
- 
-    socket.on('playCards', (cardIndices) => {
-        const player = roomState.players.find(p => p.socketId === socket.id);
-        if (!player) return;
- 
-        let played = [];
-        cardIndices.sort((a,b) => b - a).forEach(idx => {
-            played.push(player.hand.splice(idx, 1)[0]);
-        });
- 
-        roomState.tableCards = played;
-        
-        while(player.hand.length < 5 && roomState.deck.length > 0) {
-            player.hand.push(roomState.deck.pop());
-        }
- 
-        io.emit('updateRoom', roomState);
-    });
- 
-    socket.on('disconnect', () => {
-        roomState.players = roomState.players.filter(p => p.socketId !== socket.id);
-        if (roomState.players.length === 0) {
-            roomState.gameStarted = false;
-        }
-        io.emit('updateRoom', roomState);
-    });
-});
- 
-function startNewGame() {
-    roomState.gameStarted = true;
-    roomState.deck = createDeck();
-    
-    roomState.players.forEach(p => {
-        p.hand = roomState.deck.splice(0, 5);
-    });
- 
-    io.emit('updateRoom', roomState);
-}
- 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`სერვერი ჩაირთო პორტზე: ${PORT}`);
-});
+        s
