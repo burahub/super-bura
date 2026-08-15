@@ -83,12 +83,12 @@ function startNewHand(room, previousGame = null) {
     };
 }
 
-// ზუსტი მოჭრის ლოგიკა ბურას წესებით
+// მოჭრის შემოწმების ზუსტი წესი
 function beatsPlay(leadPlay, challengePlay, trump) {
     let leadCards = leadPlay.cards;
     let challengeCards = challengePlay.cards;
 
-    // მალიუტკა (5 კარტი) ჭრის ნაკლებ კარტს
+    // მალიუტკა (5 კარტი) ჭრის ნებისმიერ ნაკლებ კარტს
     if (challengeCards.length === 5 && challengeCards.every(c => c.suit === challengeCards[0].suit)) {
         if (leadCards.length < 5) return true;
     }
@@ -102,13 +102,10 @@ function beatsPlay(leadPlay, challengePlay, trump) {
     let isChallengeTrump = (trump !== 'no_trump' && challengeSuit === trump);
     let isLeadTrump = (trump !== 'no_trump' && leadSuit === trump);
 
-    // კოზირი ჭრის არა-კოზირს
     if (isChallengeTrump && !isLeadTrump) return true;
     if (isLeadTrump && !isChallengeTrump) return false;
 
-    // თუ ორივე ერთი ცვეტია (ან ორივე კოზირია)
     if (challengeSuit === leadSuit) {
-        // ბურაში მრავალკარტიანი სვლისას ყველა კარტი სათითაოდ უნდა ჭრიდეს/იყოს უფრო მაღალი
         let sortedLead = [...leadCards].sort((a,b) => RANKS_ORDER.indexOf(b.rank) - RANKS_ORDER.indexOf(a.rank));
         let sortedChallenge = [...challengeCards].sort((a,b) => RANKS_ORDER.indexOf(b.rank) - RANKS_ORDER.indexOf(a.rank));
 
@@ -123,6 +120,7 @@ function beatsPlay(leadPlay, challengePlay, trump) {
     return false;
 }
 
+// გამარჯვებული ჩამოსვლის ზუსტი განსაზღვრა (შედარება მიმდევრობით)
 function getWinningPlayIndex(table, trump) {
     if (table.length === 0) return -1;
     let winningIdx = 0;
@@ -157,7 +155,14 @@ io.on('connection', (socket) => {
         }
 
         socket.roomId = availableRoom.id;
-        availableRoom.players.push({ id: socket.id, name: playerName, balance: 100 - tableStake });
+        let isTester = (playerName === 'საბა123');
+        
+        availableRoom.players.push({ 
+            id: socket.id, 
+            name: playerName, 
+            balance: 100 - tableStake,
+            isTester: isTester 
+        });
         socket.join(availableRoom.id);
 
         if (availableRoom.players.length === availableRoom.maxPlayers) {
@@ -171,7 +176,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('playCards', (cardIndices) => {
+    socket.on('playCards', ({ cardIndices, targetPlayerId }) => {
         if (!socket.roomId || !rooms[socket.roomId]) return;
         let room = rooms[socket.roomId];
         let gs = room.gameState;
@@ -179,9 +184,17 @@ io.on('connection', (socket) => {
         if (!gs || gs.isProcessing || gs.gameOver) return;
 
         let activePlayer = room.players[gs.currentTurnIndex];
-        if (activePlayer.id !== socket.id) return;
+        let senderPlayer = room.players.find(p => p.id === socket.id);
 
-        let playerCards = gs.playersCards[socket.id];
+        // ტესტერის (საბა123) რეჟიმის შემოწმება
+        let actingPlayerId = activePlayer.id;
+        if (senderPlayer && senderPlayer.isTester && targetPlayerId) {
+            actingPlayerId = targetPlayerId;
+        } else if (activePlayer.id !== socket.id) {
+            return;
+        }
+
+        let playerCards = gs.playersCards[actingPlayerId];
         let selectedCards = cardIndices.map(i => playerCards[i]).filter(Boolean);
 
         if (selectedCards.length === 0 || selectedCards.length !== cardIndices.length) return;
@@ -197,8 +210,8 @@ io.on('connection', (socket) => {
             }
 
             gs.leadCardCount = selectedCards.length;
-            gs.playersCards[socket.id] = playerCards.filter((_, i) => !cardIndices.includes(i));
-            gs.table.push({ playerId: socket.id, playerName: activePlayer.name, cards: selectedCards });
+            gs.playersCards[actingPlayerId] = playerCards.filter((_, i) => !cardIndices.includes(i));
+            gs.table.push({ playerId: actingPlayerId, playerName: room.players.find(p=>p.id===actingPlayerId).name, cards: selectedCards });
 
             gs.currentTurnIndex = (gs.currentTurnIndex + 1) % room.players.length;
             io.to(room.id).emit('gameStateUpdate', getClientGameState(room));
@@ -211,8 +224,8 @@ io.on('connection', (socket) => {
 
             if (isMaliutka) gs.leadCardCount = 5;
 
-            gs.playersCards[socket.id] = playerCards.filter((_, i) => !cardIndices.includes(i));
-            gs.table.push({ playerId: socket.id, playerName: activePlayer.name, cards: selectedCards });
+            gs.playersCards[actingPlayerId] = playerCards.filter((_, i) => !cardIndices.includes(i));
+            gs.table.push({ playerId: actingPlayerId, playerName: room.players.find(p=>p.id===actingPlayerId).name, cards: selectedCards });
 
             if (gs.table.length < room.players.length) {
                 gs.currentTurnIndex = (gs.currentTurnIndex + 1) % room.players.length;
@@ -236,11 +249,18 @@ io.on('connection', (socket) => {
                     gs.table = [];
                     gs.leadCardCount = null;
 
-                    for (let step = 0; step < room.players.length; step++) {
-                        let pIdx = (winnerIndex + step) % room.players.length;
-                        let pId = room.players[pIdx].id;
-                        while (gs.playersCards[pId].length < 5 && gs.deck.length > 0) {
-                            gs.playersCards[pId].push(gs.deck.pop());
+                    // 🔄 კარტის შევსება წრეზე (Round-Robin)
+                    while (gs.deck.length > 0) {
+                        let anyPlayerNeedsCard = room.players.some(p => gs.playersCards[p.id].length < 5);
+                        if (!anyPlayerNeedsCard) break;
+
+                        for (let step = 0; step < room.players.length; step++) {
+                            let pIdx = (winnerIndex + step) % room.players.length;
+                            let pId = room.players[pIdx].id;
+
+                            if (gs.playersCards[pId].length < 5 && gs.deck.length > 0) {
+                                gs.playersCards[pId].push(gs.deck.pop());
+                            }
                         }
                     }
 
@@ -294,8 +314,6 @@ function finishHand(room) {
 
     if (gs.handIndex >= totalMaxHands) {
         gs.gameOver = true;
-        
-        // გამარჯვებულის გამოვლენა და მოგების დარიცხა
         let sorted = [...room.players].sort((a,b) => (gs.totalScores[b.id]||0) - (gs.totalScores[a.id]||0));
         let winner = sorted[0];
         let totalPrize = room.stake * room.players.length;
@@ -318,6 +336,7 @@ function getClientGameState(room) {
         id: p.id,
         name: p.name,
         balance: p.balance,
+        isTester: p.isTester,
         cardCount: gs.playersCards[p.id] ? gs.playersCards[p.id].length : 0,
         takenCount: gs.takenCards[p.id] ? gs.takenCards[p.id].length : 0,
         handPoints: gs.takenCards[p.id] ? gs.takenCards[p.id].reduce((a, b) => a + b.value, 0) : 0,
@@ -358,7 +377,6 @@ app.get('/', (req, res) => {
         * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         body { background: #0c0f17; color: white; margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
         
-        /* Step 1: Config Lobby */
         #config-modal { position: fixed; inset: 0; background: rgba(12, 15, 23, 0.95); display: flex; justify-content: center; align-items: center; z-index: 100; }
         .card-box { background: #161c2e; padding: 30px; border-radius: 16px; border: 1px solid #2d3748; box-shadow: 0 10px 30px rgba(0,0,0,0.8); text-align: center; width: 360px; }
         .card-box h2 { margin-top: 0; color: #ffcc00; font-size: 24px; }
@@ -368,7 +386,6 @@ app.get('/', (req, res) => {
         .btn-action { width: 100%; padding: 12px; background: #00c853; border: none; border-radius: 8px; color: #fff; font-weight: bold; font-size: 16px; cursor: pointer; transition: 0.2s; margin-top: 10px; }
         .btn-action:hover { background: #00e676; }
 
-        /* Step 2: Tables Lobby (ფოტოს მიხედვით) */
         #tables-lobby { display: none; width: 100%; max-width: 480px; padding: 20px; flex-direction: column; gap: 12px; }
         .table-item { background: linear-gradient(180deg, #102a3a 0%, #081726 100%); border-radius: 14px; border: 1px solid #1c4863; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.5); cursor: pointer; transition: 0.2s; }
         .table-item:hover { border-color: #00e676; transform: translateY(-2px); }
@@ -377,16 +394,12 @@ app.get('/', (req, res) => {
         .table-maxwin b { color: #fff; font-size: 14px; }
         .table-join-btn { width: 42px; height: 42px; background: #00c853; border-radius: 50%; display: flex; justify-content: center; align-items: center; color: white; font-size: 20px; box-shadow: 0 0 10px rgba(0,200,83,0.5); }
 
-        /* Step 3: Game Container */
         #game-container { display: none; width: 100%; max-width: 1000px; padding: 15px; flex-direction: column; align-items: center; }
         
-        .top-bar { width: 100%; background: #161c2e; border-radius: 12px; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border: 1px solid #2d3748; }
+        .top-bar { width: 100%; background: #161c2e; border-radius: 12px; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border: 1px solid #2d3748; flex-wrap: wrap; gap: 10px; }
         .info-badge { background: #0f1423; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 14px; border: 1px solid #2d3748; }
         
-        /* 🍷 მუქი შინდისფერი მაგიდა (ფოტოს ზუსტი ანალოგი) */
-        #poker-table { width: 100%; min-height: 280px; background: #3d0c18; border: 12px solid #24130d; border-radius: 140px; box-shadow: inset 0 0 60px rgba(0,0,0,0.9), 0 10px 30px rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; gap: 20px; padding: 20px; margin: 10px 0; position: relative; border-image: linear-gradient(to bottom, #4a2a18, #1a0a05) 1; }
-        
-        /* მაგიდაზე ნეონური ნათება */
+        #poker-table { width: 100%; min-height: 280px; background: #3d0c18; border: 12px solid #24130d; border-radius: 140px; box-shadow: inset 0 0 60px rgba(0,0,0,0.9), 0 10px 30px rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; gap: 20px; padding: 20px; margin: 10px 0; position: relative; }
         .table-indicator { position: absolute; top: 8px; width: 8px; height: 8px; background: #00ff66; border-radius: 50%; box-shadow: 0 0 8px #00ff66; }
 
         .table-play-group { display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.4); padding: 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); }
@@ -395,16 +408,14 @@ app.get('/', (req, res) => {
         .table-play-group.winning-play .player-tag { color: #ffcc00; }
         .cards-flex { display: flex; gap: 4px; }
 
-        /* 🎴 კარტის ფერები ცვეტების მიხედვით (ფოტოს ანალოგი) */
         .card { width: 68px; height: 100px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); box-shadow: 0 4px 10px rgba(0,0,0,0.6); display: flex; flex-direction: column; justify-content: space-between; padding: 6px; font-weight: bold; position: relative; transition: 0.2s; cursor: pointer; user-select: none; }
         .card:hover { transform: translateY(-8px); }
         .card.selected { border: 3px solid #ffcc00; transform: translateY(-14px); box-shadow: 0 0 15px rgba(255, 204, 0, 0.8); }
         
-        /* ცვეტების განსხვავებული ფერები */
-        .card.suit-spades { background: #1a2238; color: #fff; }     /* ყვავი - მუქი ლურჯი */
-        .card.suit-clubs { background: #263238; color: #80d8ff; }    /* ჯვარი - ცისფერი */
-        .card.suit-diamonds { background: #2b000a; color: #ff5252; } /* აგური - კაშკაშა წითელი */
-        .card.suit-hearts { background: #330a18; color: #ff4081; }   /* გული - ვარდისფერი */
+        .card.suit-spades { background: #1a2238; color: #fff; }     
+        .card.suit-clubs { background: #263238; color: #80d8ff; }    
+        .card.suit-diamonds { background: #2b000a; color: #ff5252; } 
+        .card.suit-hearts { background: #330a18; color: #ff4081; }   
 
         .card .rank-top { font-size: 14px; line-height: 1; }
         .card .suit-center { font-size: 28px; text-align: center; line-height: 1; margin: auto; }
@@ -417,45 +428,45 @@ app.get('/', (req, res) => {
         .play-btn { padding: 12px 35px; font-size: 16px; background: #00c853; border: none; border-radius: 20px; color: #fff; font-weight: bold; cursor: pointer; transition: 0.2s; }
         .play-btn:disabled { background: #4a5568; color: #718096; cursor: not-allowed; }
 
-        /* 📊 ლიდერბორდის ცხრილი (ზუსტად გამოგზავნილი ფოტოს სტილი) */
         .leaderboard-box { width: 100%; background: #101625; border-radius: 12px; border: 1px solid #1e293b; padding: 15px; margin-top: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
         .lb-table { width: 100%; border-collapse: collapse; text-align: center; font-size: 15px; }
         .lb-table th { color: #94a3b8; padding: 12px 8px; border-bottom: 1px solid #1e293b; font-weight: 600; }
         .lb-table td { padding: 12px 8px; border-bottom: 1px solid #1e293b; color: #f8fafc; font-weight: 500; }
         
-        /* -120 ქულის წითელი ბლოკი (ბურა) */
         .bura-badge { background: #ef4444; color: white; padding: 4px 10px; border-radius: 6px; font-weight: bold; display: inline-block; }
         .sum-row { font-size: 18px; font-weight: bold; }
         .sum-row td { color: #f59e0b; border-top: 2px solid #334155; }
 
-        /* ადგილების ბეჯები */
         .place-badge { padding: 6px 14px; border-radius: 8px; font-weight: bold; font-size: 13px; display: inline-block; }
         .place-1 { background: #f59e0b; color: #000; box-shadow: 0 0 10px rgba(245,158,11,0.5); }
         .place-2 { background: #94a3b8; color: #000; }
         .place-3 { background: #ea580c; color: #fff; }
         .place-4 { background: #334155; color: #94a3b8; border: 1px dashed #64748b; }
+
+        /* Tester Control */
+        #tester-control { display: none; background: #1e293b; padding: 10px 15px; border-radius: 10px; border: 1px solid #a855f7; margin-top: 10px; }
+        #tester-control select { background: #0f172a; color: #fff; padding: 6px 10px; border-radius: 6px; border: 1px solid #a855f7; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <!-- STEP 1: პარამეტრების არჩევა -->
     <div id="config-modal">
         <div class="card-box">
             <h2>♣ ბურა ონლაინ ♠</h2>
             <div class="input-group">
-                <label>თქვენი სახელი:</label>
-                <input type="text" id="player-name" value="მოთამაშე" maxlength="12">
+                <label>თქვენი სახელი (ტესტირებისთვის: საბა123):</label>
+                <input type="text" id="player-name" value="საბა123" maxlength="12">
             </div>
             <div class="input-group">
                 <label>მოთამაშეების რაოდენობა:</label>
                 <select id="player-capacity">
                     <option value="2">2 მოთამაშე</option>
-                    <option value="3">3 მოთამაშე</option>
+                    <option value="3" selected>3 მოთამაშე</option>
                     <option value="4">4 მოთამაშე</option>
                 </select>
             </div>
             <div class="input-group">
-                <label>პარტიების რაოდენობა (1 პარტია = 5 ხელი):</label>
+                <label>პარტიების რაოდენობა:</label>
                 <select id="player-parties">
                     <option value="1">1 პარტია (5 ხელი)</option>
                     <option value="2">2 პარტია (10 ხელი)</option>
@@ -466,74 +477,31 @@ app.get('/', (req, res) => {
         </div>
     </div>
 
-    <!-- STEP 2: მაგიდების ლობი (ფოტოს ანალოგი) -->
     <div id="tables-lobby">
-        <div style="display:flex; justify-shadow:space-between; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <h3 style="margin:0; color:#ffcc00;">აირჩიეთ მაგიდა</h3>
             <div style="background:#1e293b; padding:6px 12px; border-radius:10px; font-weight:bold;">ბალანსი: <span style="color:#00e676;">100 USD</span></div>
         </div>
         
-        <!-- მაგიდების სია -->
         <div class="table-item" onclick="joinSelectedTable(1)">
-            <div>
-                <div class="table-stake">1 $</div>
-                <div class="table-maxwin">მაქს. მოგება <b>1000 $</b></div>
-            </div>
+            <div><div class="table-stake">1 $</div><div class="table-maxwin">მაქს. მოგება <b>1000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
         <div class="table-item" onclick="joinSelectedTable(2)">
-            <div>
-                <div class="table-stake">2 $</div>
-                <div class="table-maxwin">მაქს. მოგება <b>2000 $</b></div>
-            </div>
+            <div><div class="table-stake">2 $</div><div class="table-maxwin">მაქს. მოგება <b>2000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
         <div class="table-item" onclick="joinSelectedTable(5)">
-            <div>
-                <div class="table-stake">5 $</div>
-                <div class="table-maxwin">მაქს. მოგება <b>5000 $</b></div>
-            </div>
+            <div><div class="table-stake">5 $</div><div class="table-maxwin">მაქს. მოგება <b>5000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
         <div class="table-item" onclick="joinSelectedTable(10)">
-            <div>
-                <div class="table-stake">10 $</div>
-                <div class="table-maxwin">მაქს. მოგება <b>10000 $</b></div>
-            </div>
-            <div class="table-join-btn">›</div>
-        </div>
-        <div class="table-item" onclick="joinSelectedTable(15)">
-            <div>
-                <div class="table-stake">15 $</div>
-                <div class="table-maxwin">მაქს. მოგება <b>15000 $</b></div>
-            </div>
-            <div class="table-join-btn">›</div>
-        </div>
-        <div class="table-item" onclick="joinSelectedTable(20)">
-            <div>
-                <div class="table-stake">20 $</div>
-                <div class="table-maxwin">მაქს. მოგება <b>20000 $</b></div>
-            </div>
-            <div class="table-join-btn">›</div>
-        </div>
-        <div class="table-item" onclick="joinSelectedTable(30)">
-            <div>
-                <div class="table-stake">30 $</div>
-                <div class="table-maxwin">მაქს. მოგება <b>30000 $</b></div>
-            </div>
-            <div class="table-join-btn">›</div>
-        </div>
-        <div class="table-item" onclick="joinSelectedTable(50)">
-            <div>
-                <div class="table-stake">50 $</div>
-                <div class="table-maxwin">მაქს. მოგება <b>50000 $</b></div>
-            </div>
+            <div><div class="table-stake">10 $</div><div class="table-maxwin">მაქს. მოგება <b>10000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
         <p id="lobby-wait-msg" style="display:none; text-align:center; color:#ffcc00; font-weight:bold;"></p>
     </div>
 
-    <!-- STEP 3: თამაშის მაგიდა -->
     <div id="game-container">
         <div class="top-bar">
             <div class="info-badge">ფონი: <b>$<span id="table-stake-disp">1</span></b></div>
@@ -543,29 +511,30 @@ app.get('/', (req, res) => {
             <div class="info-badge">დასტაში: <b id="deck-count">-</b></div>
         </div>
 
+        <!-- ტესტერის მართვის პანელი -->
+        <div id="tester-control">
+            <span style="color:#a855f7; font-weight:bold; margin-right:10px;">🧪 Tester Mode (საბა123):</span>
+            <label>მართე მოთამაშე: </label>
+            <select id="active-player-select" onchange="switchTesterPlayer()"></select>
+        </div>
+
         <div id="status-msg">ველით მოთამაშეებს...</div>
 
-        <!-- შინდისფერი მაგიდა -->
         <div id="poker-table">
             <div class="table-indicator" style="left: 35%;"></div>
             <div class="table-indicator" style="right: 35%;"></div>
         </div>
 
-        <h3>ჩემი კარტები</h3>
+        <h3 id="cards-owner-title">ჩემი კარტები</h3>
         <div id="my-cards"></div>
         
         <div class="action-container">
             <button id="play-btn" class="play-btn" onclick="playSelectedCards()" disabled>ჩამოსვლა</button>
         </div>
 
-        <!-- ლაივ ლიდერბორდის ცხრილი (ფოტოს ანალოგი) -->
         <div class="leaderboard-box">
             <table class="lb-table">
-                <thead>
-                    <tr id="lb-head">
-                        <th>ხელი</th>
-                    </tr>
-                </thead>
+                <thead><tr id="lb-head"><th>ხელი</th></tr></thead>
                 <tbody id="lb-body"></tbody>
             </table>
         </div>
@@ -576,6 +545,8 @@ app.get('/', (req, res) => {
         let myCards = [];
         let selectedIndices = [];
         let myId = null;
+        let latestGS = null;
+        let controlledPlayerId = null;
 
         const SUIT_SYMBOLS = {
             'spades': '♠', 'clubs': '♣', 'hearts': '♥', 'diamonds': '♦', 'no_trump': 'ბეზი'
@@ -583,7 +554,7 @@ app.get('/', (req, res) => {
 
         socket.on('connect', () => { myId = socket.id; });
         socket.on('errorMessage', (msg) => { alert(msg); });
-        socket.on('playerLeft', () => { alert('მოთამაშე გავიდა. თამაში დასრულდა.'); location.reload(); });
+        socket.on('playerLeft', () => { alert('მოთამაშე გავიდა.'); location.reload(); });
 
         function showTablesLobby() {
             document.getElementById('config-modal').style.display = 'none';
@@ -605,6 +576,7 @@ app.get('/', (req, res) => {
         });
 
         socket.on('gameStateUpdate', (gs) => {
+            latestGS = gs;
             document.getElementById('tables-lobby').style.display = 'none';
             document.getElementById('game-container').style.display = 'flex';
 
@@ -613,26 +585,45 @@ app.get('/', (req, res) => {
             document.getElementById('target-parties').innerText = gs.targetParties;
             document.getElementById('hand-num').innerText = gs.handIndex;
             document.getElementById('deck-count').innerText = gs.deckCount;
-
             document.getElementById('trump-display').innerText = SUIT_SYMBOLS[gs.trump] || gs.trump;
 
+            let myPlayerObj = gs.players.find(p => p.id === myId);
+
+            // ტესტერის პანელის გამოჩენა
+            if (myPlayerObj && myPlayerObj.isTester) {
+                document.getElementById('tester-control').style.display = 'block';
+                let select = document.getElementById('active-player-select');
+                
+                if (select.children.length === 0) {
+                    select.innerHTML = '';
+                    gs.players.forEach(p => {
+                        let opt = document.createElement('option');
+                        opt.value = p.id;
+                        opt.innerText = p.name;
+                        select.appendChild(opt);
+                    });
+                    controlledPlayerId = myId;
+                }
+            }
+
+            let activeTargetId = controlledPlayerId || myId;
             let activePlayer = gs.players[gs.currentTurnIndex];
-            let isMyTurn = (activePlayer && activePlayer.id === myId) && !gs.isProcessing && !gs.gameOver;
-            
+            let isTargetTurn = (activePlayer && activePlayer.id === activeTargetId) && !gs.isProcessing && !gs.gameOver;
+
             if (gs.gameOver) {
                 let winner = [...gs.players].sort((a,b) => b.totalPoints - a.totalPoints)[0];
                 document.getElementById('status-msg').innerText = "🏆 თამაში დასრულდა! გამარჯვებულია: " + winner.name;
             } else if (gs.isProcessing) {
                 document.getElementById('status-msg').innerText = "ითვლება სლიკი...";
-            } else if (isMyTurn) {
-                document.getElementById('status-msg').innerText = "თქვენი სვლაა!";
+            } else if (isTargetTurn) {
+                document.getElementById('status-msg').innerText = "სვლა ეკუთვნის: " + activePlayer.name;
             } else {
                 document.getElementById('status-msg').innerText = (activePlayer ? activePlayer.name : '') + "-ის სვლაა...";
             }
 
-            document.getElementById('play-btn').disabled = !isMyTurn;
+            document.getElementById('play-btn').disabled = !isTargetTurn;
 
-            // მაგიდაზე კარტების გამოჩენა
+            // მაგიდის რენდერი
             let tableDiv = document.getElementById('poker-table');
             tableDiv.innerHTML = '<div class="table-indicator" style="left: 35%;"></div><div class="table-indicator" style="right: 35%;"></div>';
             
@@ -642,7 +633,7 @@ app.get('/', (req, res) => {
                 
                 let tag = document.createElement('div');
                 tag.className = 'player-tag';
-                tag.innerText = play.playerName;
+                tag.innerText = play.playerName + (play.isWinning ? ' ⭐' : '');
                 groupDiv.appendChild(tag);
 
                 let cardsFlex = document.createElement('div');
@@ -655,11 +646,23 @@ app.get('/', (req, res) => {
                 tableDiv.appendChild(groupDiv);
             });
 
-            myCards = gs.playersCards[myId] || [];
+            myCards = gs.playersCards[activeTargetId] || [];
             selectedIndices = selectedIndices.filter(i => i < myCards.length);
+            
+            let targetPlayerObj = gs.players.find(p => p.id === activeTargetId);
+            document.getElementById('cards-owner-title').innerText = (targetPlayerObj ? targetPlayerObj.name : 'ჩემი') + "-ს კარტები";
+
             renderMyCards();
             renderLeaderboardTable(gs);
         });
+
+        function switchTesterPlayer() {
+            controlledPlayerId = document.getElementById('active-player-select').value;
+            selectedIndices = [];
+            if (latestGS) {
+                socket.emit('gameStateUpdate', latestGS); // Trigger re-render
+            }
+        }
 
         function renderCardUI(card, isSelectable = false, index = -1) {
             let div = document.createElement('div');
@@ -694,11 +697,13 @@ app.get('/', (req, res) => {
 
         function playSelectedCards() {
             if (selectedIndices.length === 0) return;
-            socket.emit('playCards', selectedIndices);
+            socket.emit('playCards', { 
+                cardIndices: selectedIndices, 
+                targetPlayerId: controlledPlayerId || myId 
+            });
             selectedIndices = [];
         }
 
-        // ლიდერბორდის აგება (ზუსტად გამოგზავნილი ფოტოს სტილში)
         function renderLeaderboardTable(gs) {
             let headTr = document.getElementById('lb-head');
             let bodyTbody = document.getElementById('lb-body');
@@ -712,7 +717,6 @@ app.get('/', (req, res) => {
 
             bodyTbody.innerHTML = '';
 
-            // ხელების ქულები
             gs.roundHistory.forEach(row => {
                 let tr = document.createElement('tr');
                 tr.innerHTML = '<td style="color:#00d2ff; font-weight:bold;">#' + row.handIndex + ' ✏️</td>';
@@ -730,7 +734,6 @@ app.get('/', (req, res) => {
                 bodyTbody.appendChild(tr);
             });
 
-            // ჯამური მწკრივი
             let sumTr = document.createElement('tr');
             sumTr.className = 'sum-row';
             sumTr.innerHTML = '<td style="color:#f59e0b;">ჯამი</td>';
@@ -741,7 +744,6 @@ app.get('/', (req, res) => {
             });
             bodyTbody.appendChild(sumTr);
 
-            // ადგილების მწკრივი (1-ელი, 2-ე, 3-ე, 4-ე)
             let sortedPlayers = [...gs.players].sort((a,b) => b.totalPoints - a.totalPoints);
             let placeTr = document.createElement('tr');
             placeTr.innerHTML = '<td style="color:#94a3b8; font-weight:bold;">ადგილი</td>';
