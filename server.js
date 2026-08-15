@@ -6,7 +6,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // კარტის მნიშვნელობები და ქულები
 const CARD_VALUES = {
@@ -28,7 +28,6 @@ function createDeck() {
             deck.push({ rank, suit, value: CARD_VALUES[rank] });
         }
     }
-    // აჩეხვა
     for (let i = deck.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [deck[i], deck[j]] = [deck[j], deck[i]];
@@ -44,7 +43,6 @@ function startNewGame(game = null) {
     let party = game ? game.party : 1;
     let roundNum = game ? game.roundNum + 1 : 1;
     
-    // კოზირის განსაზღვრა როტაციით
     let trumpIndex = (roundNum - 1) % 4;
     let currentTrump = TRUMP_ROTATION[trumpIndex];
 
@@ -62,7 +60,7 @@ function startNewGame(game = null) {
             [room.players[1].id]: []
         },
         currentTurn: game ? game.nextTurnLeader : room.players[0].id,
-        table: [], // { playerId, cards }
+        table: [],
         trump: currentTrump,
         party: party,
         roundNum: roundNum,
@@ -72,7 +70,6 @@ function startNewGame(game = null) {
     };
 }
 
-// ამოწმებს, ჭრის თუ არა მეორე სვლა პირველს
 function beatsHand(leadCards, attackCards, trump) {
     if (leadCards.length !== attackCards.length) return false;
 
@@ -82,14 +79,12 @@ function beatsHand(leadCards, attackCards, trump) {
 
     let attackSuit = attackCards[0].suit;
 
-    // თუ ჩამოსვლა კოზირია (თუ ბეზი არ არის)
     let isAttackTrump = (trump !== 'no_trump' && attackSuit === trump);
     let isLeadTrump = (trump !== 'no_trump' && leadSuit === trump);
 
     if (isAttackTrump && !isLeadTrump) return true;
 
     if (attackSuit === leadSuit) {
-        // შევადაროთ უმაღლესი კარტები
         let maxLeadRank = Math.max(...leadCards.map(c => RANKS_ORDER.indexOf(c.rank)));
         let maxAttackRank = Math.max(...attackCards.map(c => RANKS_ORDER.indexOf(c.rank)));
         return maxAttackRank > maxLeadRank;
@@ -100,7 +95,8 @@ function beatsHand(leadCards, attackCards, trump) {
 
 io.on('connection', (socket) => {
     if (room.players.length < 2) {
-        room.players.push({ id: socket.id, name: მოთამაშე ${room.players.length + 1} });
+        let pName = 'მოთამაშე ' + (room.players.length + 1);
+        room.players.push({ id: socket.id, name: pName });
         socket.emit('playerAssigned', room.players.length);
     } else {
         socket.emit('roomFull');
@@ -121,7 +117,6 @@ io.on('connection', (socket) => {
 
         if (selectedCards.length === 0) return;
 
-        // წესი 1: ერთზე მეტი კარტის ჩასვლისას, ყველა უნდა იყოს ერთი ცვეტი
         let firstSuit = selectedCards[0].suit;
         let isSameSuit = selectedCards.every(c => c.suit === firstSuit);
         if (!isSameSuit) {
@@ -129,22 +124,18 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // პირველი სვლა მაგიდაზე
         if (gs.table.length === 0) {
-            // ამოვიღოთ ჩამოშორებული კარტები ხელიდან
             gs.playersCards[socket.id] = playerCards.filter((_, i) => !cardIndices.includes(i));
             gs.table.push({ playerId: socket.id, cards: selectedCards });
             
-            // გადავიდეს რიგი მეორეზე
             let opponentId = room.players.find(p => p.id !== socket.id).id;
             gs.currentTurn = opponentId;
             io.emit('gameStateUpdate', getClientGameState());
         } 
-        // მეორე სვლა (პასუხი / გაჭრა)
         else if (gs.table.length === 1) {
             let leadPlay = gs.table[0];
             if (selectedCards.length !== leadPlay.cards.length) {
-                socket.emit('errorMessage', უნდა ჩამოხვიდეთ ზუსტად ${leadPlay.cards.length} კარტი!);
+                socket.emit('errorMessage', 'უნდა ჩამოხვიდეთ ზუსტად ' + leadPlay.cards.length + ' კარტი!');
                 return;
             }
 
@@ -154,21 +145,17 @@ io.on('connection', (socket) => {
             let isBeaten = beatsHand(leadPlay.cards, selectedCards, gs.trump);
             let winnerId = isBeaten ? socket.id : leadPlay.playerId;
 
-            // რაუნდის გამარჯვებული იღებს კარტებს
             let allTableCards = [...leadPlay.cards, ...selectedCards];
             gs.takenCards[winnerId].push(...allTableCards);
 
-            // გამარჯვებული ჩამოვა შემდეგში
             gs.nextTurnLeader = winnerId;
             gs.currentTurn = winnerId;
 
             io.emit('gameStateUpdate', getClientGameState());
 
-            // 1.5 წამში წაიღოს კარტები და შეავსოს 5-მდე
             setTimeout(() => {
                 gs.table = [];
                 
-                // შევსება 5-მდე (ჯერ ივსებს ის, ვინც წაიღო)
                 let otherId = room.players.find(p => p.id !== winnerId).id;
                 
                 while (gs.playersCards[winnerId].length < 5 && gs.deck.length > 0) {
@@ -178,7 +165,6 @@ io.on('connection', (socket) => {
                     gs.playersCards[otherId].push(gs.deck.pop());
                 }
 
-                // თუ კარტები დამთავრდა და ხელშიც აღარავის აქვს -> დარიგების დასასრული
                 let p1Hand = gs.playersCards[room.players[0].id].length;
                 let p2Hand = gs.playersCards[room.players[1].id].length;
 
@@ -212,7 +198,6 @@ function finishRound() {
         gs.p2GameScore += 1;
     }
 
-    // ახალი დარიგების დაწყება
     room.gameState = startNewGame(gs);
     io.emit('gameStateUpdate', getClientGameState());
 }
@@ -221,7 +206,6 @@ function getClientGameState() {
     return room.gameState;
 }
 
-// HTML / Client UI
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
@@ -234,10 +218,9 @@ app.get('/', (req, res) => {
     <style>
         body { font-family: Arial, sans-serif; background: #1a472a; color: white; text-align: center; margin: 0; padding: 10px; }
         #info-board { background: rgba(0,0,0,0.5); padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 18px; }
-        .suit-icon { font-size: 22px; font-weight: bold; }
         .red { color: #ff4d4d; }
         .black { color: #ffffff; }
-        #table { min-height: 160px; background: rgba(0,0,0,0.2); border: 2px dashed #fff3; border-radius: 10px; display: flex; justify-content: center; align-items: center; gap: 20px; margin: 15px 0; padding: 10px; }
+        #table { min-height: 160px; background: rgba(0,0,0,0.2); border: 2px dashed rgba(255,255,255,0.2); border-radius: 10px; display: flex; justify-content: center; align-items: center; gap: 20px; margin: 15px 0; padding: 10px; }
         .card-group { display: flex; gap: 5px; background: rgba(255,255,255,0.1); padding: 5px; border-radius: 6px; }
         .card { width: 70px; height: 105px; background: white; color: black; border-radius: 6px; border: 2px solid #333; display: flex; flex-direction: column; justify-content: space-between; padding: 5px; font-weight: bold; font-size: 18px; cursor: pointer; user-select: none; box-shadow: 2px 2px 8px rgba(0,0,0,0.4); }
         .card.selected { border: 3px solid #ffcc00; transform: translateY(-10px); }
@@ -253,7 +236,7 @@ app.get('/', (req, res) => {
     <div id="info-board">
         <div>პარტია: <b id="party-num">1</b> | დარიგება: <b id="round-num">1</b></div>
         <div>კოზირი: <span id="trump-display">-</span></div>
-        <div>ანგარიში (პარტიები): მოთამაშე 1 [<b id="score1">0</b>] - [<b id="score2">0</b>] მოთამაშე 2</div>
+        <div>ანგარიში: მოთამაშე 1 [<b id="score1">0</b>] - [<b id="score2">0</b>] მოთამაშე 2</div>
     </div>
 
     <div id="status">მუშაობს...</div>
@@ -277,7 +260,6 @@ app.get('/', (req, res) => {
         };
 
         socket.on('connect', () => { myId = socket.id; });
-
         socket.on('errorMessage', (msg) => { alert(msg); });
 
         socket.on('gameStateUpdate', (gs) => {
@@ -286,23 +268,20 @@ app.get('/', (req, res) => {
             document.getElementById('score1').innerText = gs.p1GameScore;
             document.getElementById('score2').innerText = gs.p2GameScore;
 
-            // კოზირის ჩვენება
             let trumpText = SUIT_SYMBOLS[gs.trump] || gs.trump;
             let trumpSpan = document.getElementById('trump-display');
             if (gs.trump === 'hearts' || gs.trump === 'diamonds') {
-                trumpSpan.innerHTML = \`<b class="red">\${trumpText}</b>\`;
+                trumpSpan.innerHTML = '<b class="red">' + trumpText + '</b>';
             } else if (gs.trump === 'spades' || gs.trump === 'clubs') {
-                trumpSpan.innerHTML = \`<b class="black">\${trumpText}</b>\`;
+                trumpSpan.innerHTML = '<b class="black">' + trumpText + '</b>';
             } else {
-                trumpSpan.innerHTML = \`<b>\${trumpText}</b>\`;
+                trumpSpan.innerHTML = '<b>' + trumpText + '</b>';
             }
 
-            // სტატუსი
             let isMyTurn = (gs.currentTurn === myId);
             document.getElementById('status').innerText = isMyTurn ? "თქვენი სვლაა!" : "მოწინააღმდეგის სვლაა...";
             document.getElementById('play-btn').disabled = !isMyTurn;
 
-            // მაგიდის განახლება
             let tableDiv = document.getElementById('table');
             tableDiv.innerHTML = '';
             gs.table.forEach(group => {
@@ -314,7 +293,6 @@ app.get('/', (req, res) => {
                 tableDiv.appendChild(gDiv);
             });
 
-            // ჩემი კარტები
             myCards = gs.playersCards[myId] || [];
             selectedIndices = [];
             renderMyCards();
@@ -323,15 +301,13 @@ app.get('/', (req, res) => {
         function renderCardUI(card, isSelectable = false, index = -1) {
             let div = document.createElement('div');
             let isRed = (card.suit === 'hearts' || card.suit === 'diamonds');
-            div.className = card ${isRed ? 'red' : 'black'};
+            div.className = 'card ' + (isRed ? 'red' : 'black');
             if (selectedIndices.includes(index)) div.classList.add('selected');
 
             let symbol = SUIT_SYMBOLS[card.suit] || '';
-            div.innerHTML = `
-                <div>${card.rank}</div>
-                <div class="suit">${symbol}</div>
-                <div style="text-align:right">${card.rank}</div>
-            `;
+            div.innerHTML = '<div>' + card.rank + '</div>' +
+                            '<div class="suit">' + symbol + '</div>' +
+                            '<div style="text-align:right">' + card.rank + '</div>';
 
             if (isSelectable) {
                 div.onclick = () => {
@@ -364,6 +340,6 @@ app.get('/', (req, res) => {
     `);
 });
 
-server.listen(PORT, () => {
-    console.log(Server executing on port ${PORT});
+server.listen(PORT, '0.0.0.0', () => {
+    console.log('Server running on port ' + PORT);
 });
