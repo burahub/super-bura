@@ -83,44 +83,45 @@ function startNewHand(room, previousGame = null) {
     };
 }
 
-// მოჭრის შემოწმების ზუსტი წესი
+// ცალკეული კარტის მოჭრის წესი
+function cardBeatsCard(leadCard, challengeCard, trump) {
+    let isChallengeTrump = (trump !== 'no_trump' && challengeCard.suit === trump);
+    let isLeadTrump = (trump !== 'no_trump' && leadCard.suit === trump);
+
+    if (isChallengeTrump && !isLeadTrump) return true;
+    if (!isChallengeTrump && isLeadTrump) return false;
+
+    if (challengeCard.suit === leadCard.suit) {
+        return RANKS_ORDER.indexOf(challengeCard.rank) > RANKS_ORDER.indexOf(leadCard.rank);
+    }
+    return false;
+}
+
+// ჯგუფური კარტის მოჭრის ლოგიკა (წყვილ-წყვილად შედარება)
 function beatsPlay(leadPlay, challengePlay, trump) {
     let leadCards = leadPlay.cards;
     let challengeCards = challengePlay.cards;
 
-    // მალიუტკა (5 კარტი) ჭრის ნებისმიერ ნაკლებ კარტს
+    // მალიუტკა (5 კარტი) ჭრის ნაკლებ რაოდენობას
     if (challengeCards.length === 5 && challengeCards.every(c => c.suit === challengeCards[0].suit)) {
         if (leadCards.length < 5) return true;
     }
 
     if (leadCards.length !== challengeCards.length) return false;
 
-    let challengeSuit = challengeCards[0].suit;
-    if (!challengeCards.every(c => c.suit === challengeSuit)) return false;
+    // სორტირება უფროსობის მიხედვით
+    let sortedLead = [...leadCards].sort((a,b) => RANKS_ORDER.indexOf(b.rank) - RANKS_ORDER.indexOf(a.rank));
+    let sortedChallenge = [...challengeCards].sort((a,b) => RANKS_ORDER.indexOf(b.rank) - RANKS_ORDER.indexOf(a.rank));
 
-    let leadSuit = leadCards[0].suit;
-    let isChallengeTrump = (trump !== 'no_trump' && challengeSuit === trump);
-    let isLeadTrump = (trump !== 'no_trump' && leadSuit === trump);
-
-    if (isChallengeTrump && !isLeadTrump) return true;
-    if (isLeadTrump && !isChallengeTrump) return false;
-
-    if (challengeSuit === leadSuit) {
-        let sortedLead = [...leadCards].sort((a,b) => RANKS_ORDER.indexOf(b.rank) - RANKS_ORDER.indexOf(a.rank));
-        let sortedChallenge = [...challengeCards].sort((a,b) => RANKS_ORDER.indexOf(b.rank) - RANKS_ORDER.indexOf(a.rank));
-
-        for (let i = 0; i < sortedLead.length; i++) {
-            if (RANKS_ORDER.indexOf(sortedChallenge[i].rank) <= RANKS_ORDER.indexOf(sortedLead[i].rank)) {
-                return false;
-            }
+    // ყოველი კარტი უნდა ჭრიდეს შესაბამის ჩამოსულ კარტს
+    for (let i = 0; i < sortedLead.length; i++) {
+        if (!cardBeatsCard(sortedLead[i], sortedChallenge[i], trump)) {
+            return false;
         }
-        return true;
     }
-
-    return false;
+    return true;
 }
 
-// გამარჯვებული ჩამოსვლის ზუსტი განსაზღვრა (შედარება მიმდევრობით)
 function getWinningPlayIndex(table, trump) {
     if (table.length === 0) return -1;
     let winningIdx = 0;
@@ -165,6 +166,22 @@ io.on('connection', (socket) => {
         });
         socket.join(availableRoom.id);
 
+        // თუ ტესტერია, დარჩენილ ადგილებს ვავსებთ ბოტებით
+        if (isTester) {
+            let botCount = 1;
+            while (availableRoom.players.length < availableRoom.maxPlayers) {
+                let botId = 'bot_' + botCount + '_' + Date.now();
+                availableRoom.players.push({
+                    id: botId,
+                    name: 'ბოტი ' + botCount,
+                    balance: 100,
+                    isTester: false,
+                    isBot: true
+                });
+                botCount++;
+            }
+        }
+
         if (availableRoom.players.length === availableRoom.maxPlayers) {
             availableRoom.gameState = startNewHand(availableRoom);
             io.to(availableRoom.id).emit('gameStateUpdate', getClientGameState(availableRoom));
@@ -186,7 +203,7 @@ io.on('connection', (socket) => {
         let activePlayer = room.players[gs.currentTurnIndex];
         let senderPlayer = room.players.find(p => p.id === socket.id);
 
-        // ტესტერის (საბა123) რეჟიმის შემოწმება
+        // ტესტერის რეჟიმი: ნებისმიერი მოთამაშის მართვა
         let actingPlayerId = activePlayer.id;
         if (senderPlayer && senderPlayer.isTester && targetPlayerId) {
             actingPlayerId = targetPlayerId;
@@ -249,7 +266,7 @@ io.on('connection', (socket) => {
                     gs.table = [];
                     gs.leadCardCount = null;
 
-                    // 🔄 კარტის შევსება წრეზე (Round-Robin)
+                    // კარტის შევსება წრეზე (Round-Robin)
                     while (gs.deck.length > 0) {
                         let anyPlayerNeedsCard = room.players.some(p => gs.playersCards[p.id].length < 5);
                         if (!anyPlayerNeedsCard) break;
@@ -371,46 +388,129 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ბურა ონლაინ / Pro Poker-Style Bura</title>
+    <title>ბურა ონლაინ / VIP Bura Pro</title>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        body { background: #0c0f17; color: white; margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; }
+        * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
+        body { background: radial-gradient(circle at center, #1b0f1a 0%, #070408 100%); color: white; margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         
-        #config-modal { position: fixed; inset: 0; background: rgba(12, 15, 23, 0.95); display: flex; justify-content: center; align-items: center; z-index: 100; }
-        .card-box { background: #161c2e; padding: 30px; border-radius: 16px; border: 1px solid #2d3748; box-shadow: 0 10px 30px rgba(0,0,0,0.8); text-align: center; width: 360px; }
-        .card-box h2 { margin-top: 0; color: #ffcc00; font-size: 24px; }
-        .input-group { margin: 15px 0; text-align: left; }
-        .input-group label { display: block; margin-bottom: 6px; font-size: 13px; color: #a0aec0; }
-        .input-group input, .input-group select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #2d3748; background: #0f1423; color: white; font-size: 15px; }
-        .btn-action { width: 100%; padding: 12px; background: #00c853; border: none; border-radius: 8px; color: #fff; font-weight: bold; font-size: 16px; cursor: pointer; transition: 0.2s; margin-top: 10px; }
-        .btn-action:hover { background: #00e676; }
+        /* Modern Glassmorphism Lobby Modal */
+        #config-modal { position: fixed; inset: 0; background: rgba(5, 3, 7, 0.85); backdrop-filter: blur(12px); display: flex; justify-content: center; align-items: center; z-index: 100; }
+        
+        .card-box { 
+            background: rgba(26, 18, 30, 0.7); 
+            padding: 35px 30px; 
+            border-radius: 24px; 
+            border: 1px solid rgba(255, 215, 0, 0.25); 
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), inset 0 0 15px rgba(255, 215, 0, 0.05); 
+            text-align: center; 
+            width: 380px; 
+            position: relative;
+        }
 
-        #tables-lobby { display: none; width: 100%; max-width: 480px; padding: 20px; flex-direction: column; gap: 12px; }
-        .table-item { background: linear-gradient(180deg, #102a3a 0%, #081726 100%); border-radius: 14px; border: 1px solid #1c4863; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.5); cursor: pointer; transition: 0.2s; }
-        .table-item:hover { border-color: #00e676; transform: translateY(-2px); }
-        .table-stake { font-size: 20px; font-weight: bold; color: #fff; }
-        .table-maxwin { font-size: 12px; color: #718096; margin-top: 2px; }
-        .table-maxwin b { color: #fff; font-size: 14px; }
-        .table-join-btn { width: 42px; height: 42px; background: #00c853; border-radius: 50%; display: flex; justify-content: center; align-items: center; color: white; font-size: 20px; box-shadow: 0 0 10px rgba(0,200,83,0.5); }
+        .card-box h2 { 
+            margin: 0 0 25px 0; 
+            color: #ffd700; 
+            font-size: 26px; 
+            letter-spacing: 1px;
+            text-shadow: 0 0 12px rgba(255, 215, 0, 0.4);
+        }
+
+        .input-group { margin: 18px 0; text-align: left; }
+        .input-group label { display: block; margin-bottom: 8px; font-size: 13px; color: #d1d5db; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+        
+        .input-group input, .input-group select { 
+            width: 100%; 
+            padding: 12px 14px; 
+            border-radius: 12px; 
+            border: 1px solid rgba(255, 255, 255, 0.15); 
+            background: rgba(10, 6, 14, 0.7); 
+            color: #fff; 
+            font-size: 15px; 
+            outline: none;
+            transition: all 0.25s ease;
+        }
+
+        .input-group input:focus, .input-group select:focus {
+            border-color: #ffd700;
+            box-shadow: 0 0 10px rgba(255, 215, 0, 0.3);
+        }
+
+        .btn-action { 
+            width: 100%; 
+            padding: 14px; 
+            background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); 
+            border: none; 
+            border-radius: 12px; 
+            color: #000; 
+            font-weight: 800; 
+            font-size: 16px; 
+            cursor: pointer; 
+            transition: all 0.3s ease; 
+            margin-top: 15px; 
+            box-shadow: 0 4px 15px rgba(255, 215, 0, 0.3);
+        }
+
+        .btn-action:hover { 
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(255, 215, 0, 0.5);
+        }
+
+        #tables-lobby { display: none; width: 100%; max-width: 480px; padding: 20px; flex-direction: column; gap: 14px; }
+        
+        .table-item { 
+            background: rgba(30, 20, 35, 0.6); 
+            border-radius: 16px; 
+            border: 1px solid rgba(255, 255, 255, 0.1); 
+            padding: 16px 22px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            box-shadow: 0 8px 20px rgba(0,0,0,0.4); 
+            cursor: pointer; 
+            transition: all 0.25s ease; 
+        }
+
+        .table-item:hover { 
+            border-color: #ffd700; 
+            background: rgba(45, 28, 52, 0.8);
+            transform: translateY(-3px); 
+            box-shadow: 0 10px 25px rgba(255, 215, 0, 0.2);
+        }
+
+        .table-stake { font-size: 22px; font-weight: 800; color: #ffd700; }
+        .table-maxwin { font-size: 13px; color: #9ca3af; margin-top: 2px; }
+        .table-maxwin b { color: #fff; }
+        
+        .table-join-btn { 
+            width: 42px; 
+            height: 42px; 
+            background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); 
+            border-radius: 50%; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            color: #000; 
+            font-size: 22px; 
+            font-weight: bold;
+        }
 
         #game-container { display: none; width: 100%; max-width: 1000px; padding: 15px; flex-direction: column; align-items: center; }
         
-        .top-bar { width: 100%; background: #161c2e; border-radius: 12px; padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border: 1px solid #2d3748; flex-wrap: wrap; gap: 10px; }
-        .info-badge { background: #0f1423; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 14px; border: 1px solid #2d3748; }
+        .top-bar { width: 100%; background: rgba(22, 15, 28, 0.8); border-radius: 14px; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border: 1px solid rgba(255,255,255,0.1); flex-wrap: wrap; gap: 10px; }
+        .info-badge { background: rgba(10, 6, 14, 0.8); padding: 8px 16px; border-radius: 20px; font-weight: bold; font-size: 14px; border: 1px solid rgba(255,215,0,0.3); color: #ffd700; }
         
         #poker-table { width: 100%; min-height: 280px; background: #3d0c18; border: 12px solid #24130d; border-radius: 140px; box-shadow: inset 0 0 60px rgba(0,0,0,0.9), 0 10px 30px rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; gap: 20px; padding: 20px; margin: 10px 0; position: relative; }
-        .table-indicator { position: absolute; top: 8px; width: 8px; height: 8px; background: #00ff66; border-radius: 50%; box-shadow: 0 0 8px #00ff66; }
 
         .table-play-group { display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.4); padding: 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); }
-        .table-play-group.winning-play { border: 2px solid #ffcc00; box-shadow: 0 0 15px rgba(255, 204, 0, 0.6); }
+        .table-play-group.winning-play { border: 2px solid #ffd700; box-shadow: 0 0 15px rgba(255, 215, 0, 0.6); }
         .player-tag { font-size: 11px; font-weight: bold; color: #a0aec0; margin-bottom: 4px; }
-        .table-play-group.winning-play .player-tag { color: #ffcc00; }
+        .table-play-group.winning-play .player-tag { color: #ffd700; }
         .cards-flex { display: flex; gap: 4px; }
 
         .card { width: 68px; height: 100px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); box-shadow: 0 4px 10px rgba(0,0,0,0.6); display: flex; flex-direction: column; justify-content: space-between; padding: 6px; font-weight: bold; position: relative; transition: 0.2s; cursor: pointer; user-select: none; }
         .card:hover { transform: translateY(-8px); }
-        .card.selected { border: 3px solid #ffcc00; transform: translateY(-14px); box-shadow: 0 0 15px rgba(255, 204, 0, 0.8); }
+        .card.selected { border: 3px solid #ffd700; transform: translateY(-14px); box-shadow: 0 0 15px rgba(255, 215, 0, 0.8); }
         
         .card.suit-spades { background: #1a2238; color: #fff; }     
         .card.suit-clubs { background: #263238; color: #80d8ff; }    
@@ -423,42 +523,37 @@ app.get('/', (req, res) => {
 
         .action-container { display: flex; gap: 15px; justify-content: center; align-items: center; margin-top: 15px; }
         #my-cards { display: flex; justify-content: center; gap: 10px; margin-top: 15px; min-height: 110px; flex-wrap: wrap; }
-        #status-msg { font-size: 18px; font-weight: bold; color: #ffcc00; margin: 10px 0; min-height: 25px; }
+        #status-msg { font-size: 18px; font-weight: bold; color: #ffd700; margin: 10px 0; min-height: 25px; }
         
-        .play-btn { padding: 12px 35px; font-size: 16px; background: #00c853; border: none; border-radius: 20px; color: #fff; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        .play-btn { padding: 12px 35px; font-size: 16px; background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); border: none; border-radius: 20px; color: #000; font-weight: bold; cursor: pointer; transition: 0.2s; }
         .play-btn:disabled { background: #4a5568; color: #718096; cursor: not-allowed; }
 
-        .leaderboard-box { width: 100%; background: #101625; border-radius: 12px; border: 1px solid #1e293b; padding: 15px; margin-top: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+        .leaderboard-box { width: 100%; background: rgba(16, 22, 37, 0.8); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); padding: 15px; margin-top: 20px; }
         .lb-table { width: 100%; border-collapse: collapse; text-align: center; font-size: 15px; }
         .lb-table th { color: #94a3b8; padding: 12px 8px; border-bottom: 1px solid #1e293b; font-weight: 600; }
         .lb-table td { padding: 12px 8px; border-bottom: 1px solid #1e293b; color: #f8fafc; font-weight: 500; }
         
         .bura-badge { background: #ef4444; color: white; padding: 4px 10px; border-radius: 6px; font-weight: bold; display: inline-block; }
         .sum-row { font-size: 18px; font-weight: bold; }
-        .sum-row td { color: #f59e0b; border-top: 2px solid #334155; }
-
-        .place-badge { padding: 6px 14px; border-radius: 8px; font-weight: bold; font-size: 13px; display: inline-block; }
-        .place-1 { background: #f59e0b; color: #000; box-shadow: 0 0 10px rgba(245,158,11,0.5); }
-        .place-2 { background: #94a3b8; color: #000; }
-        .place-3 { background: #ea580c; color: #fff; }
-        .place-4 { background: #334155; color: #94a3b8; border: 1px dashed #64748b; }
+        .sum-row td { color: #ffd700; border-top: 2px solid #334155; }
 
         /* Tester Control */
-        #tester-control { display: none; background: #1e293b; padding: 10px 15px; border-radius: 10px; border: 1px solid #a855f7; margin-top: 10px; }
-        #tester-control select { background: #0f172a; color: #fff; padding: 6px 10px; border-radius: 6px; border: 1px solid #a855f7; font-weight: bold; }
+        #tester-control { display: none; background: rgba(30, 20, 45, 0.9); padding: 12px 20px; border-radius: 12px; border: 1px solid #a855f7; margin-top: 10px; }
+        #tester-control select { background: #0f172a; color: #fff; padding: 8px 12px; border-radius: 8px; border: 1px solid #a855f7; font-weight: bold; }
     </style>
 </head>
 <body>
 
+    <!-- VIP Glassmorphism Lobby Modal -->
     <div id="config-modal">
         <div class="card-box">
-            <h2>♣ ბურა ონლაინ ♠</h2>
+            <h2>♠ BURA VIP CLUB ♣</h2>
             <div class="input-group">
                 <label>თქვენი სახელი (ტესტირებისთვის: საბა123):</label>
                 <input type="text" id="player-name" value="საბა123" maxlength="12">
             </div>
             <div class="input-group">
-                <label>მოთამაშეების რაოდენობა:</label>
+                <label>მოთამაშეები:</label>
                 <select id="player-capacity">
                     <option value="2">2 მოთამაშე</option>
                     <option value="3" selected>3 მოთამაშე</option>
@@ -466,40 +561,40 @@ app.get('/', (req, res) => {
                 </select>
             </div>
             <div class="input-group">
-                <label>პარტიების რაოდენობა:</label>
+                <label>პარტიები:</label>
                 <select id="player-parties">
                     <option value="1">1 პარტია (5 ხელი)</option>
                     <option value="2">2 პარტია (10 ხელი)</option>
                     <option value="4">4 პარტია (20 ხელი)</option>
                 </select>
             </div>
-            <button class="btn-action" onclick="showTablesLobby()">მაგიდების ნახვა</button>
+            <button class="btn-action" onclick="showTablesLobby()">მაგიდის არჩევა ›</button>
         </div>
     </div>
 
     <div id="tables-lobby">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-            <h3 style="margin:0; color:#ffcc00;">აირჩიეთ მაგიდა</h3>
-            <div style="background:#1e293b; padding:6px 12px; border-radius:10px; font-weight:bold;">ბალანსი: <span style="color:#00e676;">100 USD</span></div>
+            <h3 style="margin:0; color:#ffd700;">აირჩიეთ ფონი</h3>
+            <div style="background:rgba(255,255,255,0.08); padding:8px 16px; border-radius:12px; font-weight:bold;">ბალანსი: <span style="color:#ffd700;">100 USD</span></div>
         </div>
         
         <div class="table-item" onclick="joinSelectedTable(1)">
-            <div><div class="table-stake">1 $</div><div class="table-maxwin">მაქს. მოგება <b>1000 $</b></div></div>
+            <div><div class="table-stake">1 $</div><div class="table-maxwin">მოგება: <b>1000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
         <div class="table-item" onclick="joinSelectedTable(2)">
-            <div><div class="table-stake">2 $</div><div class="table-maxwin">მაქს. მოგება <b>2000 $</b></div></div>
+            <div><div class="table-stake">2 $</div><div class="table-maxwin">მოგება: <b>2000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
         <div class="table-item" onclick="joinSelectedTable(5)">
-            <div><div class="table-stake">5 $</div><div class="table-maxwin">მაქს. მოგება <b>5000 $</b></div></div>
+            <div><div class="table-stake">5 $</div><div class="table-maxwin">მოგება: <b>5000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
         <div class="table-item" onclick="joinSelectedTable(10)">
-            <div><div class="table-stake">10 $</div><div class="table-maxwin">მაქს. მოგება <b>10000 $</b></div></div>
+            <div><div class="table-stake">10 $</div><div class="table-maxwin">მოგება: <b>10000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
-        <p id="lobby-wait-msg" style="display:none; text-align:center; color:#ffcc00; font-weight:bold;"></p>
+        <p id="lobby-wait-msg" style="display:none; text-align:center; color:#ffd700; font-weight:bold;"></p>
     </div>
 
     <div id="game-container">
@@ -513,17 +608,14 @@ app.get('/', (req, res) => {
 
         <!-- ტესტერის მართვის პანელი -->
         <div id="tester-control">
-            <span style="color:#a855f7; font-weight:bold; margin-right:10px;">🧪 Tester Mode (საბა123):</span>
+            <span style="color:#a855f7; font-weight:bold; margin-right:10px;">🧪 ტესტერის რეჟიმი (საბა123):</span>
             <label>მართე მოთამაშე: </label>
             <select id="active-player-select" onchange="switchTesterPlayer()"></select>
         </div>
 
         <div id="status-msg">ველით მოთამაშეებს...</div>
 
-        <div id="poker-table">
-            <div class="table-indicator" style="left: 35%;"></div>
-            <div class="table-indicator" style="right: 35%;"></div>
-        </div>
+        <div id="poker-table"></div>
 
         <h3 id="cards-owner-title">ჩემი კარტები</h3>
         <div id="my-cards"></div>
@@ -589,21 +681,20 @@ app.get('/', (req, res) => {
 
             let myPlayerObj = gs.players.find(p => p.id === myId);
 
-            // ტესტერის პანელის გამოჩენა
+            // ტესტერის პანელის განახლება
             if (myPlayerObj && myPlayerObj.isTester) {
                 document.getElementById('tester-control').style.display = 'block';
                 let select = document.getElementById('active-player-select');
                 
-                if (select.children.length === 0) {
-                    select.innerHTML = '';
-                    gs.players.forEach(p => {
-                        let opt = document.createElement('option');
-                        opt.value = p.id;
-                        opt.innerText = p.name;
-                        select.appendChild(opt);
-                    });
-                    controlledPlayerId = myId;
-                }
+                select.innerHTML = '';
+                gs.players.forEach(p => {
+                    let opt = document.createElement('option');
+                    opt.value = p.id;
+                    opt.innerText = p.name;
+                    if (p.id === (controlledPlayerId || myId)) opt.selected = true;
+                    select.appendChild(opt);
+                });
+                if (!controlledPlayerId) controlledPlayerId = myId;
             }
 
             let activeTargetId = controlledPlayerId || myId;
@@ -625,7 +716,7 @@ app.get('/', (req, res) => {
 
             // მაგიდის რენდერი
             let tableDiv = document.getElementById('poker-table');
-            tableDiv.innerHTML = '<div class="table-indicator" style="left: 35%;"></div><div class="table-indicator" style="right: 35%;"></div>';
+            tableDiv.innerHTML = '';
             
             gs.table.forEach(play => {
                 let groupDiv = document.createElement('div');
@@ -660,7 +751,7 @@ app.get('/', (req, res) => {
             controlledPlayerId = document.getElementById('active-player-select').value;
             selectedIndices = [];
             if (latestGS) {
-                socket.emit('gameStateUpdate', latestGS); // Trigger re-render
+                socket.emit('gameStateUpdate', latestGS);
             }
         }
 
@@ -719,7 +810,7 @@ app.get('/', (req, res) => {
 
             gs.roundHistory.forEach(row => {
                 let tr = document.createElement('tr');
-                tr.innerHTML = '<td style="color:#00d2ff; font-weight:bold;">#' + row.handIndex + ' ✏️</td>';
+                tr.innerHTML = '<td style="color:#ffd700; font-weight:bold;">#' + row.handIndex + '</td>';
                 
                 gs.players.forEach(p => {
                     let pts = row.scores[p.id] !== undefined ? row.scores[p.id] : 0;
@@ -736,26 +827,13 @@ app.get('/', (req, res) => {
 
             let sumTr = document.createElement('tr');
             sumTr.className = 'sum-row';
-            sumTr.innerHTML = '<td style="color:#f59e0b;">ჯამი</td>';
+            sumTr.innerHTML = '<td>ჯამი</td>';
             gs.players.forEach(p => {
                 let td = document.createElement('td');
                 td.innerText = p.totalPoints;
                 sumTr.appendChild(td);
             });
             bodyTbody.appendChild(sumTr);
-
-            let sortedPlayers = [...gs.players].sort((a,b) => b.totalPoints - a.totalPoints);
-            let placeTr = document.createElement('tr');
-            placeTr.innerHTML = '<td style="color:#94a3b8; font-weight:bold;">ადგილი</td>';
-
-            gs.players.forEach(p => {
-                let rankIndex = sortedPlayers.findIndex(sp => sp.id === p.id) + 1;
-                let td = document.createElement('td');
-                let badgeClass = 'place-' + rankIndex;
-                td.innerHTML = '<span class="place-badge ' + badgeClass + '">' + rankIndex + '-ე ადგილი</span>';
-                placeTr.appendChild(td);
-            });
-            bodyTbody.appendChild(placeTr);
         }
     </script>
 </body>
