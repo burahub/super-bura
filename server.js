@@ -83,7 +83,6 @@ function startNewHand(room, previousGame = null) {
     };
 }
 
-// ცალკეული კარტის მოჭრის წესი
 function cardBeatsCard(leadCard, challengeCard, trump) {
     let isChallengeTrump = (trump !== 'no_trump' && challengeCard.suit === trump);
     let isLeadTrump = (trump !== 'no_trump' && leadCard.suit === trump);
@@ -97,23 +96,19 @@ function cardBeatsCard(leadCard, challengeCard, trump) {
     return false;
 }
 
-// ჯგუფური კარტის მოჭრის ლოგიკა (წყვილ-წყვილად შედარება)
 function beatsPlay(leadPlay, challengePlay, trump) {
     let leadCards = leadPlay.cards;
     let challengeCards = challengePlay.cards;
 
-    // მალიუტკა (5 კარტი) ჭრის ნაკლებ რაოდენობას
     if (challengeCards.length === 5 && challengeCards.every(c => c.suit === challengeCards[0].suit)) {
         if (leadCards.length < 5) return true;
     }
 
     if (leadCards.length !== challengeCards.length) return false;
 
-    // სორტირება უფროსობის მიხედვით
     let sortedLead = [...leadCards].sort((a,b) => RANKS_ORDER.indexOf(b.rank) - RANKS_ORDER.indexOf(a.rank));
     let sortedChallenge = [...challengeCards].sort((a,b) => RANKS_ORDER.indexOf(b.rank) - RANKS_ORDER.indexOf(a.rank));
 
-    // ყოველი კარტი უნდა ჭრიდეს შესაბამის ჩამოსულ კარტს
     for (let i = 0; i < sortedLead.length; i++) {
         if (!cardBeatsCard(sortedLead[i], sortedChallenge[i], trump)) {
             return false;
@@ -166,7 +161,6 @@ io.on('connection', (socket) => {
         });
         socket.join(availableRoom.id);
 
-        // თუ ტესტერია, დარჩენილ ადგილებს ვავსებთ ბოტებით
         if (isTester) {
             let botCount = 1;
             while (availableRoom.players.length < availableRoom.maxPlayers) {
@@ -193,6 +187,16 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('switchControlledPlayer', ({ targetPlayerId }) => {
+        if (!socket.roomId || !rooms[socket.roomId]) return;
+        let room = rooms[socket.roomId];
+        let sender = room.players.find(p => p.id === socket.id);
+        
+        if (sender && sender.isTester && room.gameState) {
+            socket.emit('gameStateUpdate', getClientGameState(room, targetPlayerId));
+        }
+    });
+
     socket.on('playCards', ({ cardIndices, targetPlayerId }) => {
         if (!socket.roomId || !rooms[socket.roomId]) return;
         let room = rooms[socket.roomId];
@@ -203,9 +207,13 @@ io.on('connection', (socket) => {
         let activePlayer = room.players[gs.currentTurnIndex];
         let senderPlayer = room.players.find(p => p.id === socket.id);
 
-        // ტესტერის რეჟიმი: ნებისმიერი მოთამაშის მართვა
         let actingPlayerId = activePlayer.id;
+
         if (senderPlayer && senderPlayer.isTester && targetPlayerId) {
+            if (targetPlayerId !== activePlayer.id) {
+                socket.emit('errorMessage', 'ახლა ' + activePlayer.name + '-ის სვლაა! გადართეთ მასზე.');
+                return;
+            }
             actingPlayerId = targetPlayerId;
         } else if (activePlayer.id !== socket.id) {
             return;
@@ -231,7 +239,7 @@ io.on('connection', (socket) => {
             gs.table.push({ playerId: actingPlayerId, playerName: room.players.find(p=>p.id===actingPlayerId).name, cards: selectedCards });
 
             gs.currentTurnIndex = (gs.currentTurnIndex + 1) % room.players.length;
-            io.to(room.id).emit('gameStateUpdate', getClientGameState(room));
+            broadcastGameState(room);
         } 
         else {
             if (!isMaliutka && selectedCards.length !== gs.leadCardCount) {
@@ -246,7 +254,7 @@ io.on('connection', (socket) => {
 
             if (gs.table.length < room.players.length) {
                 gs.currentTurnIndex = (gs.currentTurnIndex + 1) % room.players.length;
-                io.to(room.id).emit('gameStateUpdate', getClientGameState(room));
+                broadcastGameState(room);
             } else {
                 let winIdx = getWinningPlayIndex(gs.table, gs.trump);
                 let winningPlay = gs.table[winIdx];
@@ -260,13 +268,12 @@ io.on('connection', (socket) => {
                 gs.currentTurnIndex = winnerIndex;
                 gs.isProcessing = true;
 
-                io.to(room.id).emit('gameStateUpdate', getClientGameState(room));
+                broadcastGameState(room);
 
                 setTimeout(() => {
                     gs.table = [];
                     gs.leadCardCount = null;
 
-                    // კარტის შევსება წრეზე (Round-Robin)
                     while (gs.deck.length > 0) {
                         let anyPlayerNeedsCard = room.players.some(p => gs.playersCards[p.id].length < 5);
                         if (!anyPlayerNeedsCard) break;
@@ -287,7 +294,7 @@ io.on('connection', (socket) => {
                     if (allHandsEmpty) {
                         finishHand(room);
                     } else {
-                        io.to(room.id).emit('gameStateUpdate', getClientGameState(room));
+                        broadcastGameState(room);
                     }
                 }, 2000);
             }
@@ -303,6 +310,12 @@ io.on('connection', (socket) => {
         }
     });
 });
+
+function broadcastGameState(room) {
+    room.players.forEach(p => {
+        io.to(p.id).emit('gameStateUpdate', getClientGameState(room, p.id));
+    });
+}
 
 function finishHand(room) {
     let gs = room.gameState;
@@ -336,16 +349,16 @@ function finishHand(room) {
         let totalPrize = room.stake * room.players.length;
         winner.balance += totalPrize;
 
-        io.to(room.id).emit('gameStateUpdate', getClientGameState(room));
+        broadcastGameState(room);
     } else {
         let nextLeaderIndex = (minPlayerIndex + 1) % room.players.length;
         gs.nextRoundLeaderIndex = nextLeaderIndex;
         room.gameState = startNewHand(room, gs);
-        io.to(room.id).emit('gameStateUpdate', getClientGameState(room));
+        broadcastGameState(room);
     }
 }
 
-function getClientGameState(room) {
+function getClientGameState(room, forPlayerId) {
     let gs = room.gameState;
     let winningIndex = getWinningPlayIndex(gs.table, gs.trump);
 
@@ -373,6 +386,7 @@ function getClientGameState(room) {
         stake: room.stake,
         players: playersSummary,
         playersCards: gs.playersCards,
+        viewingPlayerId: forPlayerId,
         currentTurnIndex: gs.currentTurnIndex,
         isProcessing: gs.isProcessing,
         deckCount: gs.deck.length,
@@ -394,7 +408,6 @@ app.get('/', (req, res) => {
         * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
         body { background: radial-gradient(circle at center, #1b0f1a 0%, #070408 100%); color: white; margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         
-        /* Modern Glassmorphism Lobby Modal */
         #config-modal { position: fixed; inset: 0; background: rgba(5, 3, 7, 0.85); backdrop-filter: blur(12px); display: flex; justify-content: center; align-items: center; z-index: 100; }
         
         .card-box { 
@@ -405,111 +418,45 @@ app.get('/', (req, res) => {
             box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), inset 0 0 15px rgba(255, 215, 0, 0.05); 
             text-align: center; 
             width: 380px; 
-            position: relative;
         }
 
-        .card-box h2 { 
-            margin: 0 0 25px 0; 
-            color: #ffd700; 
-            font-size: 26px; 
-            letter-spacing: 1px;
-            text-shadow: 0 0 12px rgba(255, 215, 0, 0.4);
-        }
-
+        .card-box h2 { margin: 0 0 25px 0; color: #ffd700; font-size: 26px; text-shadow: 0 0 12px rgba(255, 215, 0, 0.4); }
         .input-group { margin: 18px 0; text-align: left; }
-        .input-group label { display: block; margin-bottom: 8px; font-size: 13px; color: #d1d5db; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+        .input-group label { display: block; margin-bottom: 8px; font-size: 13px; color: #d1d5db; font-weight: 600; text-transform: uppercase; }
         
         .input-group input, .input-group select { 
-            width: 100%; 
-            padding: 12px 14px; 
-            border-radius: 12px; 
-            border: 1px solid rgba(255, 255, 255, 0.15); 
-            background: rgba(10, 6, 14, 0.7); 
-            color: #fff; 
-            font-size: 15px; 
-            outline: none;
-            transition: all 0.25s ease;
-        }
-
-        .input-group input:focus, .input-group select:focus {
-            border-color: #ffd700;
-            box-shadow: 0 0 10px rgba(255, 215, 0, 0.3);
+            width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.15); 
+            background: rgba(10, 6, 14, 0.7); color: #fff; font-size: 15px; outline: none;
         }
 
         .btn-action { 
-            width: 100%; 
-            padding: 14px; 
-            background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); 
-            border: none; 
-            border-radius: 12px; 
-            color: #000; 
-            font-weight: 800; 
-            font-size: 16px; 
-            cursor: pointer; 
-            transition: all 0.3s ease; 
-            margin-top: 15px; 
-            box-shadow: 0 4px 15px rgba(255, 215, 0, 0.3);
-        }
-
-        .btn-action:hover { 
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(255, 215, 0, 0.5);
+            width: 100%; padding: 14px; background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); 
+            border: none; border-radius: 12px; color: #000; font-weight: 800; font-size: 16px; cursor: pointer; margin-top: 15px; 
         }
 
         #tables-lobby { display: none; width: 100%; max-width: 480px; padding: 20px; flex-direction: column; gap: 14px; }
         
         .table-item { 
-            background: rgba(30, 20, 35, 0.6); 
-            border-radius: 16px; 
-            border: 1px solid rgba(255, 255, 255, 0.1); 
-            padding: 16px 22px; 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            box-shadow: 0 8px 20px rgba(0,0,0,0.4); 
-            cursor: pointer; 
-            transition: all 0.25s ease; 
-        }
-
-        .table-item:hover { 
-            border-color: #ffd700; 
-            background: rgba(45, 28, 52, 0.8);
-            transform: translateY(-3px); 
-            box-shadow: 0 10px 25px rgba(255, 215, 0, 0.2);
+            background: rgba(30, 20, 35, 0.6); border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.1); 
+            padding: 16px 22px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; 
         }
 
         .table-stake { font-size: 22px; font-weight: 800; color: #ffd700; }
         .table-maxwin { font-size: 13px; color: #9ca3af; margin-top: 2px; }
-        .table-maxwin b { color: #fff; }
-        
-        .table-join-btn { 
-            width: 42px; 
-            height: 42px; 
-            background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); 
-            border-radius: 50%; 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            color: #000; 
-            font-size: 22px; 
-            font-weight: bold;
-        }
+        .table-join-btn { width: 42px; height: 42px; background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); border-radius: 50%; display: flex; justify-content: center; align-items: center; color: #000; font-size: 22px; font-weight: bold; }
 
         #game-container { display: none; width: 100%; max-width: 1000px; padding: 15px; flex-direction: column; align-items: center; }
-        
         .top-bar { width: 100%; background: rgba(22, 15, 28, 0.8); border-radius: 14px; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border: 1px solid rgba(255,255,255,0.1); flex-wrap: wrap; gap: 10px; }
         .info-badge { background: rgba(10, 6, 14, 0.8); padding: 8px 16px; border-radius: 20px; font-weight: bold; font-size: 14px; border: 1px solid rgba(255,215,0,0.3); color: #ffd700; }
         
-        #poker-table { width: 100%; min-height: 280px; background: #3d0c18; border: 12px solid #24130d; border-radius: 140px; box-shadow: inset 0 0 60px rgba(0,0,0,0.9), 0 10px 30px rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center; gap: 20px; padding: 20px; margin: 10px 0; position: relative; }
+        #poker-table { width: 100%; min-height: 280px; background: #3d0c18; border: 12px solid #24130d; border-radius: 140px; box-shadow: inset 0 0 60px rgba(0,0,0,0.9); display: flex; justify-content: center; align-items: center; gap: 20px; padding: 20px; margin: 10px 0; }
 
         .table-play-group { display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.4); padding: 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); }
         .table-play-group.winning-play { border: 2px solid #ffd700; box-shadow: 0 0 15px rgba(255, 215, 0, 0.6); }
         .player-tag { font-size: 11px; font-weight: bold; color: #a0aec0; margin-bottom: 4px; }
-        .table-play-group.winning-play .player-tag { color: #ffd700; }
         .cards-flex { display: flex; gap: 4px; }
 
-        .card { width: 68px; height: 100px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); box-shadow: 0 4px 10px rgba(0,0,0,0.6); display: flex; flex-direction: column; justify-content: space-between; padding: 6px; font-weight: bold; position: relative; transition: 0.2s; cursor: pointer; user-select: none; }
-        .card:hover { transform: translateY(-8px); }
+        .card { width: 68px; height: 100px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); box-shadow: 0 4px 10px rgba(0,0,0,0.6); display: flex; flex-direction: column; justify-content: space-between; padding: 6px; font-weight: bold; cursor: pointer; user-select: none; }
         .card.selected { border: 3px solid #ffd700; transform: translateY(-14px); box-shadow: 0 0 15px rgba(255, 215, 0, 0.8); }
         
         .card.suit-spades { background: #1a2238; color: #fff; }     
@@ -525,26 +472,20 @@ app.get('/', (req, res) => {
         #my-cards { display: flex; justify-content: center; gap: 10px; margin-top: 15px; min-height: 110px; flex-wrap: wrap; }
         #status-msg { font-size: 18px; font-weight: bold; color: #ffd700; margin: 10px 0; min-height: 25px; }
         
-        .play-btn { padding: 12px 35px; font-size: 16px; background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); border: none; border-radius: 20px; color: #000; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        .play-btn { padding: 12px 35px; font-size: 16px; background: linear-gradient(135deg, #ffd700 0%, #ff8c00 100%); border: none; border-radius: 20px; color: #000; font-weight: bold; cursor: pointer; }
         .play-btn:disabled { background: #4a5568; color: #718096; cursor: not-allowed; }
 
         .leaderboard-box { width: 100%; background: rgba(16, 22, 37, 0.8); border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); padding: 15px; margin-top: 20px; }
         .lb-table { width: 100%; border-collapse: collapse; text-align: center; font-size: 15px; }
-        .lb-table th { color: #94a3b8; padding: 12px 8px; border-bottom: 1px solid #1e293b; font-weight: 600; }
-        .lb-table td { padding: 12px 8px; border-bottom: 1px solid #1e293b; color: #f8fafc; font-weight: 500; }
-        
-        .bura-badge { background: #ef4444; color: white; padding: 4px 10px; border-radius: 6px; font-weight: bold; display: inline-block; }
-        .sum-row { font-size: 18px; font-weight: bold; }
-        .sum-row td { color: #ffd700; border-top: 2px solid #334155; }
+        .lb-table th { color: #94a3b8; padding: 12px 8px; border-bottom: 1px solid #1e293b; }
+        .lb-table td { padding: 12px 8px; border-bottom: 1px solid #1e293b; color: #f8fafc; }
 
-        /* Tester Control */
         #tester-control { display: none; background: rgba(30, 20, 45, 0.9); padding: 12px 20px; border-radius: 12px; border: 1px solid #a855f7; margin-top: 10px; }
         #tester-control select { background: #0f172a; color: #fff; padding: 8px 12px; border-radius: 8px; border: 1px solid #a855f7; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <!-- VIP Glassmorphism Lobby Modal -->
     <div id="config-modal">
         <div class="card-box">
             <h2>♠ BURA VIP CLUB ♣</h2>
@@ -565,7 +506,6 @@ app.get('/', (req, res) => {
                 <select id="player-parties">
                     <option value="1">1 პარტია (5 ხელი)</option>
                     <option value="2">2 პარტია (10 ხელი)</option>
-                    <option value="4">4 პარტია (20 ხელი)</option>
                 </select>
             </div>
             <button class="btn-action" onclick="showTablesLobby()">მაგიდის არჩევა ›</button>
@@ -575,7 +515,6 @@ app.get('/', (req, res) => {
     <div id="tables-lobby">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
             <h3 style="margin:0; color:#ffd700;">აირჩიეთ ფონი</h3>
-            <div style="background:rgba(255,255,255,0.08); padding:8px 16px; border-radius:12px; font-weight:bold;">ბალანსი: <span style="color:#ffd700;">100 USD</span></div>
         </div>
         
         <div class="table-item" onclick="joinSelectedTable(1)">
@@ -584,14 +523,6 @@ app.get('/', (req, res) => {
         </div>
         <div class="table-item" onclick="joinSelectedTable(2)">
             <div><div class="table-stake">2 $</div><div class="table-maxwin">მოგება: <b>2000 $</b></div></div>
-            <div class="table-join-btn">›</div>
-        </div>
-        <div class="table-item" onclick="joinSelectedTable(5)">
-            <div><div class="table-stake">5 $</div><div class="table-maxwin">მოგება: <b>5000 $</b></div></div>
-            <div class="table-join-btn">›</div>
-        </div>
-        <div class="table-item" onclick="joinSelectedTable(10)">
-            <div><div class="table-stake">10 $</div><div class="table-maxwin">მოგება: <b>10000 $</b></div></div>
             <div class="table-join-btn">›</div>
         </div>
         <p id="lobby-wait-msg" style="display:none; text-align:center; color:#ffd700; font-weight:bold;"></p>
@@ -606,7 +537,6 @@ app.get('/', (req, res) => {
             <div class="info-badge">დასტაში: <b id="deck-count">-</b></div>
         </div>
 
-        <!-- ტესტერის მართვის პანელი -->
         <div id="tester-control">
             <span style="color:#a855f7; font-weight:bold; margin-right:10px;">🧪 ტესტერის რეჟიმი (საბა123):</span>
             <label>მართე მოთამაშე: </label>
@@ -637,7 +567,6 @@ app.get('/', (req, res) => {
         let myCards = [];
         let selectedIndices = [];
         let myId = null;
-        let latestGS = null;
         let controlledPlayerId = null;
 
         const SUIT_SYMBOLS = {
@@ -663,12 +592,7 @@ app.get('/', (req, res) => {
             document.getElementById('lobby-wait-msg').innerText = 'ველით სხვა მოთამაშეებს...';
         }
 
-        socket.on('waitingForPlayers', (data) => {
-            document.getElementById('lobby-wait-msg').innerText = 'ველით მოთამაშეებს: (' + data.current + '/' + data.max + ')';
-        });
-
         socket.on('gameStateUpdate', (gs) => {
-            latestGS = gs;
             document.getElementById('tables-lobby').style.display = 'none';
             document.getElementById('game-container').style.display = 'flex';
 
@@ -679,10 +603,9 @@ app.get('/', (req, res) => {
             document.getElementById('deck-count').innerText = gs.deckCount;
             document.getElementById('trump-display').innerText = SUIT_SYMBOLS[gs.trump] || gs.trump;
 
-            let myPlayerObj = gs.players.find(p => p.id === myId);
+            let meObj = gs.players.find(p => p.id === myId);
 
-            // ტესტერის პანელის განახლება
-            if (myPlayerObj && myPlayerObj.isTester) {
+            if (meObj && meObj.isTester) {
                 document.getElementById('tester-control').style.display = 'block';
                 let select = document.getElementById('active-player-select');
                 
@@ -714,7 +637,6 @@ app.get('/', (req, res) => {
 
             document.getElementById('play-btn').disabled = !isTargetTurn;
 
-            // მაგიდის რენდერი
             let tableDiv = document.getElementById('poker-table');
             tableDiv.innerHTML = '';
             
@@ -750,9 +672,7 @@ app.get('/', (req, res) => {
         function switchTesterPlayer() {
             controlledPlayerId = document.getElementById('active-player-select').value;
             selectedIndices = [];
-            if (latestGS) {
-                socket.emit('gameStateUpdate', latestGS);
-            }
+            socket.emit('switchControlledPlayer', { targetPlayerId: controlledPlayerId });
         }
 
         function renderCardUI(card, isSelectable = false, index = -1) {
@@ -815,22 +735,18 @@ app.get('/', (req, res) => {
                 gs.players.forEach(p => {
                     let pts = row.scores[p.id] !== undefined ? row.scores[p.id] : 0;
                     let td = document.createElement('td');
-                    if (pts === 0) {
-                        td.innerHTML = '<span class="bura-badge">-120</span>';
-                    } else {
-                        td.innerText = pts;
-                    }
+                    td.innerText = pts === 0 ? '-120' : pts;
                     tr.appendChild(td);
                 });
                 bodyTbody.appendChild(tr);
             });
 
             let sumTr = document.createElement('tr');
-            sumTr.className = 'sum-row';
-            sumTr.innerHTML = '<td>ჯამი</td>';
+            sumTr.innerHTML = '<td style="color:#ffd700; font-weight:bold;">ჯამი</td>';
             gs.players.forEach(p => {
                 let td = document.createElement('td');
                 td.innerText = p.totalPoints;
+                td.style.fontWeight = 'bold';
                 sumTr.appendChild(td);
             });
             bodyTbody.appendChild(sumTr);
